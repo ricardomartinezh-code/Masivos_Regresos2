@@ -1,0 +1,14 @@
+{
+  "name": "waba-webhook",
+  "version": "1.0.0",
+  "description": "Webhook de Meta WhatsApp Cloud API en Node.js",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "body-parser": "1.20.2",
+    "express": "4.19.2"
+  }
+}
