@@ -1,104 +1,118 @@
-import express from "express";
-import bodyParser from "body-parser";
-import crypto from "crypto";
-import axios from "axios";
+// index.js
+'use strict';
 
-// ====== CONFIG (con tus valores y también soporta variables de entorno) ======
-const VERIFY_TOKEN    = process.env.VERIFY_TOKEN    || "mi_verify_token_super_seguro";
-const WABA_TOKEN      = process.env.WABA_TOKEN      || "EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD";
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "756528907544969";
-const APP_SECRET      = process.env.APP_SECRET      || "89bb6d2367a4ab0ad3e94021e7cb2046";
-const PORT           = process.env.PORT || 3000;
-
-// ====== APP ======
+const express = require('express');
+const crypto = require('crypto');
 const app = express();
 
-// Guardamos el raw body para validar la firma
-app.use(bodyParser.json({
+/* ====== Variables de entorno (Render) ======
+   VERIFY_TOKEN, WABA_TOKEN, PHONE_NUMBER_ID, APP_SECRET
+   (No pongas secretos en el repo)
+*/
+const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
+const WABA_TOKEN      = process.env.WABA_TOKEN || '';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
+const APP_SECRET      = process.env.APP_SECRET || '';
+
+/* Guardamos el cuerpo crudo para validar la firma si hay APP_SECRET */
+app.use(express.json({
   verify: (req, _res, buf) => { req.rawBody = buf; }
 }));
 
-// Valida firma X-Hub-Signature-256 de Meta (recomendado)
-function verifySignature(req) {
-  const header = req.get("x-hub-signature-256");
-  if (!header) return false;
-  const expected = "sha256=" + crypto.createHmac("sha256", APP_SECRET).update(req.rawBody).digest("hex");
+/* ====== Firma X-Hub-Signature-256 (opcional si APP_SECRET está vacío) ====== */
+function verifyMetaSignature(req) {
+  if (!APP_SECRET) return true; // si no hay secreto, no validamos
   try {
-    return crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+    const signature = req.get('x-hub-signature-256');
+    if (!signature || !signature.startsWith('sha256=')) return false;
+    const received = signature.split('=')[1];
+    const expected = crypto
+      .createHmac('sha256', APP_SECRET)
+      .update(req.rawBody)
+      .digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
   } catch {
     return false;
   }
 }
 
-// Salud
-app.get("/", (_req, res) => res.status(200).send("ok"));
+/* ====== Enviar texto por Cloud API ====== */
+async function sendText(to, body) {
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: { body, preview_url: false }
+  };
 
-// Verificación inicial de webhook (GET)
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WABA_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✓ Webhook verificado correctamente.");
+  const data = await resp.json();
+  if (!resp.ok) {
+    console.error('❌ Error enviando mensaje:', data);
+  } else {
+    console.log('✅ Mensaje enviado:', data);
+  }
+}
+
+/* ====== Verificación del webhook (GET) ====== */
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     return res.status(200).send(challenge);
   }
-  console.warn("✗ Verificación fallida (mode/token incorrectos).");
   return res.sendStatus(403);
 });
 
-// Recepción de notificaciones (POST)
-app.post("/webhook", (req, res) => {
-  if (!verifySignature(req)) {
-    console.warn("Firma X-Hub-Signature inválida.");
-    // Si quisieras forzar reintentos: return res.sendStatus(403);
-  }
+/* ====== Recepción de eventos (POST) ====== */
+app.post('/webhook', async (req, res) => {
+  if (!verifyMetaSignature(req)) return res.sendStatus(401);
 
   const body = req.body;
-  if (body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
-    const msg   = body.entry[0].changes[0].value.messages[0];
-    const from  = msg.from;
-    const type  = msg.type;
-    const text  = type === "text" ? (msg.text?.body || "") : "";
-    console.log(`Mensaje recibido de ${from}: [${type}] ${text}`);
-  } else {
-    console.log("Evento:", JSON.stringify(body));
+  if (body?.object !== 'whatsapp_business_account') {
+    return res.sendStatus(404);
   }
 
-  // WhatsApp exige 200 en <10s
-  res.sendStatus(200);
-});
-
-// Endpoint de prueba para enviar tu template "masivos_ricardo" (es_ES)
-app.post("/send-template", async (req, res) => {
   try {
-    const to = req.query.to || "523349834406"; // cambia si quieres probar otro destino
-
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: {
-        name: "masivos_ricardo",
-        language: { code: "es_ES" }
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        // Solo eventos de mensajes entrantes
+        if (change.field === 'messages') {
+          const msgs = change.value?.messages ?? [];
+          for (const msg of msgs) {
+            const from = msg?.from; // número del usuario que escribió
+            if (from) {
+              // Respuesta automática a cualquier tipo de mensaje
+              await sendText(
+                from,
+                'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias'
+              );
+            }
+          }
+        }
       }
-    };
-
-    const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-    const r = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WABA_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-
-    res.status(200).json(r.data);
+    }
+    return res.sendStatus(200);
   } catch (err) {
-    console.error("Error enviando template:", err?.response?.data || err.message);
-    res.status(500).json(err?.response?.data || { error: err.message });
+    console.error('⚠️ Error procesando webhook:', err);
+    return res.sendStatus(500);
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor escuchando en puerto ${PORT}`);
-});
+/* ====== Endpoints de salud ====== */
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.get('/', (_req, res) => res.status(200).send('alive'));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Servidor escuchando en puerto ${PORT}`));
