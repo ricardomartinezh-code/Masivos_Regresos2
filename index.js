@@ -9,9 +9,9 @@ const app = express();
 
 // ====== ENV ======
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN || '';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
-const APP_SECRET      = process.env.APP_SECRET || ''; // si lo dejas vacío, no valida firma
+const WABA_TOKEN      = process.env.WABA_TOKEN || '4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '756528907544969';
+const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // si lo dejas vacío, no valida firma
 const PORT            = process.env.PORT || 10000;
 
 // ====== Body parsers (guardamos raw para firma) ======
