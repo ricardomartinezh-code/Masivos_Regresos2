@@ -1,166 +1,188 @@
-'use strict';
+// index.js
+// Webhook WhatsApp Cloud API — CommonJS (require)
 
 const express = require('express');
+const axios = require('axios');
 const crypto = require('crypto');
-const morgan = require('morgan');
 
 const app = express();
 
 // ====== ENV ======
-const VERIFY_TOKEN   = process.env.VERIFY_TOKEN   || 'mi_verify_token_super_seguro';
-const WABA_TOKEN     = process.env.WABA_TOKEN     || '';
-const PHONE_NUMBER_ID= process.env.PHONE_NUMBER_ID|| '';
-const APP_SECRET     = process.env.APP_SECRET     || ''; // opcional para validar firma
-const PORT           = process.env.PORT || 3000;
+const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
+const WABA_TOKEN      = process.env.WABA_TOKEN || '';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
+const APP_SECRET      = process.env.APP_SECRET || ''; // si lo dejas vacío, no valida firma
+const PORT            = process.env.PORT || 10000;
 
-const GRAPH_BASE = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}`;
+// ====== Body parsers (guardamos raw para firma) ======
+const rawBodySaver = (req, _res, buf) => { req.rawBody = buf };
+app.use(express.json({ verify: rawBodySaver }));
+app.use(express.urlencoded({ extended: true, verify: rawBodySaver }));
 
-// ====== LOGS & body raw (para firma) ======
-app.use(morgan('combined'));
-app.use(express.json({
-  verify: (req, _res, buf) => { req.rawBody = buf; }
-}));
-
-// ====== Utils ======
-function validateSignature(req) {
-  if (!APP_SECRET) return true; // si no pones APP_SECRET, omitimos la validación
-  const header = req.get('x-hub-signature-256');
-  if (!header || !header.startsWith('sha256=')) return false;
-
-  const expected = 'sha256=' + crypto
-    .createHmac('sha256', APP_SECRET)
-    .update(req.rawBody || '')
-    .digest('hex');
-
-  try {
-    return crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
-  } catch {
-    return false;
-  }
-}
-
-async function sendText(to, body) {
-  const url = `${GRAPH_BASE}/messages`;
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body }
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${WABA_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const data = await res.json().catch(() => ({}));
-  console.log('==> Respuesta de sendText:', res.status, JSON.stringify(data));
-  if (!res.ok) throw new Error(`sendText failed: ${res.status}`);
-  return data;
-}
-
-async function sendTemplate(to, name, lang = 'es_ES', components = []) {
-  const url = `${GRAPH_BASE}/messages`;
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'template',
-    template: {
-      name,
-      language: { code: lang },
-      components
-    }
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${WABA_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-
-  const data = await res.json().catch(() => ({}));
-  console.log('==> Respuesta de sendTemplate:', res.status, JSON.stringify(data));
-  if (!res.ok) throw new Error(`sendTemplate failed: ${res.status}`);
-  return data;
-}
-
-// ====== Health & root ======
+// ====== Health & Home ======
+app.get('/', (_req, res) => res.send('Webhook OK'));
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
-app.get('/', (_req, res) => res.status(200).send('Webhook up'));
 
-// ====== WEBHOOK VERIFY (GET) ======
+// ====== GET /webhook (verificación) ======
 app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('==> GET /webhook verificado');
+    console.log('✅ Webhook verificado!');
     return res.status(200).send(challenge);
   }
-  console.warn('==> GET /webhook verificación fallida');
+  console.warn('❌ Verificación fallida: token o modo inválido');
   return res.sendStatus(403);
 });
 
-// ====== WEBHOOK RECEIVE (POST) ======
+// ====== Helper: validar firma X-Hub-Signature-256 ======
+function validateSignature(req) {
+  if (!APP_SECRET) return true; // validación desactivada
+  const header = req.get('x-hub-signature-256');
+  if (!header || !req.rawBody) return true; // si no viene, no bloqueamos
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', APP_SECRET)
+    .update(req.rawBody)
+    .digest('hex');
+
+  // Comparación constante (evitar timing attacks)
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// ====== Helper: descripción legible del mensaje ======
+function describeMessage(m) {
+  switch (m.type) {
+    case 'text':
+      return `texto="${m.text?.body}"`;
+    case 'image':
+      return `imagen id=${m.image?.id} caption="${m.image?.caption || ''}"`;
+    case 'video':
+      return `video id=${m.video?.id} caption="${m.video?.caption || ''}"`;
+    case 'audio':
+      return `audio id=${m.audio?.id}`;
+    case 'document':
+      return `documento "${m.document?.filename || ''}" id=${m.document?.id}`;
+    case 'sticker':
+      return `sticker id=${m.sticker?.id}`;
+    case 'location':
+      return `ubicación ${m.location?.latitude},${m.location?.longitude} ` +
+             `name="${m.location?.name || ''}" address="${m.location?.address || ''}"`;
+    case 'contacts':
+      return `contactos count=${m.contacts?.length || 0}`;
+    case 'interactive':
+      if (m.interactive?.type === 'button_reply') {
+        return `button_reply title="${m.interactive.button_reply?.title}" id=${m.interactive.button_reply?.id}`;
+      }
+      if (m.interactive?.type === 'list_reply') {
+        return `list_reply title="${m.interactive.list_reply?.title}" id=${m.interactive.list_reply?.id}`;
+      }
+      return 'interactive (otro)';
+    case 'reaction':
+      return `reaction emoji=${m.reaction?.emoji} a=${m.reaction?.message_id}`;
+    default:
+      return `tipo=${m.type} data=${JSON.stringify(m[m.type] || {})}`;
+  }
+}
+
+// ====== POST /webhook (eventos entrantes) ======
 app.post('/webhook', async (req, res) => {
   if (!validateSignature(req)) {
     console.warn('==> Firma inválida');
     return res.sendStatus(401);
   }
 
-  console.log('==> Webhook payload:');
-  console.log(JSON.stringify(req.body, null, 2));
-
-  // Estructura común del Webhook de WhatsApp
-  const entry = req.body?.entry?.[0];
+  const entry  = req.body?.entry?.[0];
   const change = entry?.changes?.[0];
   const value  = change?.value;
 
-  // Mensajes entrantes
+  // Mensajes
   const messages = value?.messages;
   if (Array.isArray(messages) && messages.length > 0) {
-    const msg = messages[0];
-    const from = msg.from; // número del usuario que escribió (E.164)
-    const type = msg.type;
+    const msg   = messages[0];
+    const from  = msg.from;
+    const tipo  = msg.type;
+    const human = describeMessage(msg);
+    const profileName = value?.contacts?.[0]?.profile?.name;
 
-    console.log(`==> Mensaje recibido de ${from} (tipo: ${type})`);
+    console.log(`==> Mensaje de ${from}${profileName ? ' ('+profileName+')' : ''} | ${human}`);
 
-    // Auto-reply (texto) a cualquier mensaje
+    // Auto-reply
     try {
       await sendText(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
     } catch (err) {
-      console.error('Error al enviar auto-reply:', err?.message || err);
+      console.error('Error al enviar auto-reply:', err?.response?.data || err?.message || err);
     }
   }
 
-  // Responder siempre 200 para que Meta considere entregado
+  // Estados de entrega/lectura
+  const statuses = value?.statuses;
+  if (Array.isArray(statuses) && statuses.length > 0) {
+    const s = statuses[0];
+    console.log(
+      `==> Status: to=${s.recipient_id} id=${s.id} status=${s.status}` +
+      (s.conversation ? ` conv=${s.conversation.id}/${s.conversation.origin?.type}` : '')
+    );
+  }
+
   return res.sendStatus(200);
 });
 
-// ====== (Opcional) endpoint para probar envíos manuales ======
-app.get('/send-test', async (req, res) => {
-  const to = req.query.to;
-  if (!to) return res.status(400).json({ error: 'Falta ?to=5233...' });
-  try {
-    const r = await sendText(to, 'Mensaje de prueba desde /send-test ✅');
-    return res.json(r);
-  } catch (e) {
-    return res.status(500).json({ error: e?.message || 'send-test failed' });
+// ====== Enviar texto ======
+async function sendText(to, body) {
+  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
+    throw new Error('Faltan WABA_TOKEN o PHONE_NUMBER_ID');
   }
-});
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(
+    url,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body, preview_url: false }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WABA_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    }
+  );
+}
 
+// ====== Enviar template (por si lo necesitas) ======
+async function sendTemplate(to, name, lang = 'es_ES', components = []) {
+  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
+    throw new Error('Faltan WABA_TOKEN o PHONE_NUMBER_ID');
+  }
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(
+    url,
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: { name, language: { code: lang }, components }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WABA_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    }
+  );
+}
+
+// ====== Arranque ======
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en puerto ${PORT}`);
-  console.log('/////////////////////////////////////////////');
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
   console.log('==> Your service is live 🎉');
-  console.log(`==> PHONE_NUMBER_ID: ${PHONE_NUMBER_ID ? '[ok]' : '[faltante]'}`);
-  console.log('/////////////////////////////////////////////');
+  console.log('//////////////////////////////////////////////////////////');
 });
