@@ -1,188 +1,188 @@
-// index.js
-// Webhook WhatsApp Cloud API — CommonJS (require)
+/* Webhook WhatsApp – Masivos_Regresos2
+   Reglas:
+   - "No estoy interesado" => "Perfecto borramos su registro. Gracias"
+   - "Gracias" | "si" | "sí" => sin respuesta
+   - Cualquier otro => "Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias"
+*/
 
 const express = require('express');
-const axios = require('axios');
 const crypto = require('crypto');
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
 const app = express();
 
-// ====== ENV ======
-const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN || '4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '756528907544969';
-const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // si lo dejas vacío, no valida firma
-const PORT            = process.env.PORT || 10000;
+// Guardamos el cuerpo crudo para validar la firma de Meta (si hay APP_SECRET)
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString('utf8');
+    },
+  })
+);
 
-// ====== Body parsers (guardamos raw para firma) ======
-const rawBodySaver = (req, _res, buf) => { req.rawBody = buf };
-app.use(express.json({ verify: rawBodySaver }));
-app.use(express.urlencoded({ extended: true, verify: rawBodySaver }));
+// === TUS CLAVES (quedan como default y se pueden sobreescribir con env vars en Render) ===
+const VERIFY_TOKEN     = process.env.VERIFY_TOKEN      || 'mi_verify_token_super_seguro';
+const WABA_TOKEN       = process.env.WABA_TOKEN        || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
+const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID   || '756528907544969';
+const APP_SECRET       = process.env.APP_SECRET        || '89bb6d2367a4ab0ad3e94021e7cb2046';
 
-// ====== Health & Home ======
-app.get('/', (_req, res) => res.send('Webhook OK'));
-app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+// === Utils ===
+const normalize = (s = '') =>
+  s
+    .toString()
+    .trim()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
 
-// ====== GET /webhook (verificación) ======
+function logLine(msg) {
+  console.log(`==> ${msg}`);
+}
+
+function validarFirma(req) {
+  if (!APP_SECRET) return true; // si no hay secreto, no validamos
+  try {
+    const header = req.get('x-hub-signature-256') || '';
+    const [, firmaMeta = ''] = header.split('=');
+    const hmac = crypto.createHmac('sha256', APP_SECRET);
+    hmac.update(req.rawBody || '', 'utf8');
+    const nuestra = hmac.digest('hex');
+    const ok = crypto.timingSafeEqual(Buffer.from(nuestra), Buffer.from(firmaMeta));
+    if (!ok) logLine('⚠️ Firma inválida. Evento descartado.');
+    return ok;
+  } catch (e) {
+    console.error('Error validando firma:', e);
+    return false;
+  }
+}
+
+async function enviarTexto(toNumber, bodyText) {
+  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
+    logLine('❌ Falta WABA_TOKEN o PHONE_NUMBER_ID, no se puede enviar.');
+    return;
+  }
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: 'whatsapp',
+    to: toNumber,
+    type: 'text',
+    text: { body: bodyText },
+  };
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${WABA_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      console.error('❌ Error API al enviar:', data);
+    } else {
+      logLine(`✔️ Auto-reply enviado a ${toNumber}. id=${data?.messages?.[0]?.id || 'n/a'}`);
+    }
+  } catch (err) {
+    console.error('❌ Error de red al enviar:', err);
+  }
+}
+
+function extraerTextoDeMensaje(msg) {
+  if (!msg) return '';
+  // texto normal
+  if (msg.type === 'text' && msg.text?.body) return msg.text.body;
+
+  // botones / listas
+  if (msg.type === 'interactive' && msg.interactive) {
+    const it = msg.interactive;
+    if (it.type === 'button_reply' && it.button_reply?.title) return it.button_reply.title;
+    if (it.type === 'list_reply' && it.list_reply?.title) return it.list_reply.title;
+  }
+  return '';
+}
+
+// === Health/endpoints básicos ===
+app.get('/', (_, res) => res.send('OK'));
+app.get('/healthz', (_, res) => res.json({ ok: true, ts: Date.now() }));
+
+// === Webhook Verify (GET) ===
 app.get('/webhook', (req, res) => {
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ Webhook verificado!');
+    logLine('🔐 Webhook verificado (GET).');
     return res.status(200).send(challenge);
   }
-  console.warn('❌ Verificación fallida: token o modo inválido');
+  logLine('❌ Verificación fallida (GET).');
   return res.sendStatus(403);
 });
 
-// ====== Helper: validar firma X-Hub-Signature-256 ======
-function validateSignature(req) {
-  if (!APP_SECRET) return true; // validación desactivada
-  const header = req.get('x-hub-signature-256');
-  if (!header || !req.rawBody) return true; // si no viene, no bloqueamos
-  const expected = 'sha256=' + crypto
-    .createHmac('sha256', APP_SECRET)
-    .update(req.rawBody)
-    .digest('hex');
+// === Webhook Receiver (POST) ===
+app.post('/webhook', (req, res) => {
+  // responder rápido para que Meta no corte
+  res.sendStatus(200);
 
-  // Comparación constante (evitar timing attacks)
-  const a = Buffer.from(header);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
+  if (!validarFirma(req)) return;
 
-// ====== Helper: descripción legible del mensaje ======
-function describeMessage(m) {
-  switch (m.type) {
-    case 'text':
-      return `texto="${m.text?.body}"`;
-    case 'image':
-      return `imagen id=${m.image?.id} caption="${m.image?.caption || ''}"`;
-    case 'video':
-      return `video id=${m.video?.id} caption="${m.video?.caption || ''}"`;
-    case 'audio':
-      return `audio id=${m.audio?.id}`;
-    case 'document':
-      return `documento "${m.document?.filename || ''}" id=${m.document?.id}`;
-    case 'sticker':
-      return `sticker id=${m.sticker?.id}`;
-    case 'location':
-      return `ubicación ${m.location?.latitude},${m.location?.longitude} ` +
-             `name="${m.location?.name || ''}" address="${m.location?.address || ''}"`;
-    case 'contacts':
-      return `contactos count=${m.contacts?.length || 0}`;
-    case 'interactive':
-      if (m.interactive?.type === 'button_reply') {
-        return `button_reply title="${m.interactive.button_reply?.title}" id=${m.interactive.button_reply?.id}`;
+  const body = req.body;
+  if (body?.object !== 'whatsapp_business_account') return;
+
+  const entries = body.entry || [];
+  for (const entry of entries) {
+    const changes = entry.changes || [];
+    for (const change of changes) {
+      const value = change.value || {};
+
+      // Log de meta del número
+      const md = value.metadata || {};
+      if (md.display_phone_number || md.phone_number_id) {
+        logLine(
+          `WABA meta -> display_phone_number=${md.display_phone_number || 'n/a'} phone_number_id=${md.phone_number_id || 'n/a'}`
+        );
       }
-      if (m.interactive?.type === 'list_reply') {
-        return `list_reply title="${m.interactive.list_reply?.title}" id=${m.interactive.list_reply?.id}`;
+
+      // Logs de estados
+      if (Array.isArray(value.statuses)) {
+        for (const st of value.statuses) {
+          logLine(`Status: to=${st.recipient_id} status=${st.status} msgId=${st.id} conv=${st.conversation?.id || 'n/a'}`);
+        }
       }
-      return 'interactive (otro)';
-    case 'reaction':
-      return `reaction emoji=${m.reaction?.emoji} a=${m.reaction?.message_id}`;
-    default:
-      return `tipo=${m.type} data=${JSON.stringify(m[m.type] || {})}`;
-  }
-}
 
-// ====== POST /webhook (eventos entrantes) ======
-app.post('/webhook', async (req, res) => {
-  if (!validateSignature(req)) {
-    console.warn('==> Firma inválida');
-    return res.sendStatus(401);
-  }
+      // Mensajes entrantes
+      if (Array.isArray(value.messages)) {
+        for (const msg of value.messages) {
+          const from = msg.from;
+          const texto = extraerTextoDeMensaje(msg);
 
-  const entry  = req.body?.entry?.[0];
-  const change = entry?.changes?.[0];
-  const value  = change?.value;
+          // Log del mensaje recibido
+          logLine(`Mensaje de ${from} | texto="${texto || '(no-text)'}"`);
 
-  // Mensajes
-  const messages = value?.messages;
-  if (Array.isArray(messages) && messages.length > 0) {
-    const msg   = messages[0];
-    const from  = msg.from;
-    const tipo  = msg.type;
-    const human = describeMessage(msg);
-    const profileName = value?.contacts?.[0]?.profile?.name;
+          // Normalizamos para evaluar reglas
+          const t = normalize(texto).replace(/[^\p{L}\p{N}\s]/gu, '').trim();
 
-    console.log(`==> Mensaje de ${from}${profileName ? ' ('+profileName+')' : ''} | ${human}`);
-
-    // Auto-reply
-    try {
-      await sendText(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
-    } catch (err) {
-      console.error('Error al enviar auto-reply:', err?.response?.data || err?.message || err);
+          if (t.includes('no estoy interesado')) {
+            enviarTexto(from, 'Perfecto borramos su registro. Gracias');
+          } else if (t === 'gracias' || t === 'si' || t === 'si.' || t === 'si ' || t === 'sí' || t === 'sí.' || t === 'sí ') {
+            logLine(`Sin respuesta a "${texto}" (regla de silencio).`);
+          } else if (texto) {
+            enviarTexto(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
+          } else {
+            // mensaje sin texto (sticker/imagen/etc.)
+            enviarTexto(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
+          }
+        }
+      }
     }
   }
-
-  // Estados de entrega/lectura
-  const statuses = value?.statuses;
-  if (Array.isArray(statuses) && statuses.length > 0) {
-    const s = statuses[0];
-    console.log(
-      `==> Status: to=${s.recipient_id} id=${s.id} status=${s.status}` +
-      (s.conversation ? ` conv=${s.conversation.id}/${s.conversation.origin?.type}` : '')
-    );
-  }
-
-  return res.sendStatus(200);
 });
 
-// ====== Enviar texto ======
-async function sendText(to, body) {
-  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
-    throw new Error('Faltan WABA_TOKEN o PHONE_NUMBER_ID');
-  }
-  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-  await axios.post(
-    url,
-    {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body, preview_url: false }
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WABA_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    }
-  );
-}
-
-// ====== Enviar template (por si lo necesitas) ======
-async function sendTemplate(to, name, lang = 'es_ES', components = []) {
-  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
-    throw new Error('Faltan WABA_TOKEN o PHONE_NUMBER_ID');
-  }
-  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-  await axios.post(
-    url,
-    {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: { name, language: { code: lang }, components }
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${WABA_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    }
-  );
-}
-
-// ====== Arranque ======
+// === Arranque ===
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
-  console.log('==> Your service is live 🎉');
-  console.log('//////////////////////////////////////////////////////////');
+  logLine(`Servidor escuchando en puerto ${PORT}`);
+  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
+    logLine('⚠️ Revisa WABA_TOKEN/PHONE_NUMBER_ID; son obligatorios.');
+  }
 });
