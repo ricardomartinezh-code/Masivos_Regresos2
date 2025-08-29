@@ -1,188 +1,148 @@
-/* Webhook WhatsApp – Masivos_Regresos2
-   Reglas:
-   - "No estoy interesado" => "Perfecto borramos su registro. Gracias"
-   - "Gracias" | "si" | "sí" => sin respuesta
-   - Cualquier otro => "Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias"
-*/
-
+// index.js (CommonJS)
 const express = require('express');
-const crypto = require('crypto');
-const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
+const axios = require('axios');
 
 const app = express();
+app.use(express.json());
 
-// Guardamos el cuerpo crudo para validar la firma de Meta (si hay APP_SECRET)
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString('utf8');
-    },
-  })
-);
+// ===== Credenciales (con fallback a ENV) =====
+const VERIFY_TOKEN     = process.env.VERIFY_TOKEN     || 'mi_verify_token_super_seguro';
+const WABA_TOKEN       = process.env.WABA_TOKEN       || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
+const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID  || '756528907544969';
+const APP_SECRET       = process.env.APP_SECRET       || '89bb6d2367a4ab0ad3e94021e7cb2046'; // (no usado aquí)
 
-// === TUS CLAVES (quedan como default y se pueden sobreescribir con env vars en Render) ===
-const VERIFY_TOKEN     = process.env.VERIFY_TOKEN      || 'mi_verify_token_super_seguro';
-const WABA_TOKEN       = process.env.WABA_TOKEN        || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
-const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID   || '756528907544969';
-const APP_SECRET       = process.env.APP_SECRET        || '89bb6d2367a4ab0ad3e94021e7cb2046';
+// ===== Utilidades =====
+const PORT = process.env.PORT || 10000;
 
-// === Utils ===
-const normalize = (s = '') =>
-  s
-    .toString()
-    .trim()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase();
+const normalize = (s='') =>
+  s.toString()
+   .trim()
+   .toLowerCase()
+   .normalize('NFD')
+   .replace(/\p{Diacritic}/gu, ''); // quita acentos
 
-function logLine(msg) {
-  console.log(`==> ${msg}`);
-}
+const getMessageText = (msg) => {
+  if (!msg) return '';
+  // texto directo
+  if (msg.type === 'text' && msg.text?.body) return msg.text.body;
 
-function validarFirma(req) {
-  if (!APP_SECRET) return true; // si no hay secreto, no validamos
-  try {
-    const header = req.get('x-hub-signature-256') || '';
-    const [, firmaMeta = ''] = header.split('=');
-    const hmac = crypto.createHmac('sha256', APP_SECRET);
-    hmac.update(req.rawBody || '', 'utf8');
-    const nuestra = hmac.digest('hex');
-    const ok = crypto.timingSafeEqual(Buffer.from(nuestra), Buffer.from(firmaMeta));
-    if (!ok) logLine('⚠️ Firma inválida. Evento descartado.');
-    return ok;
-  } catch (e) {
-    console.error('Error validando firma:', e);
-    return false;
+  // botones/interactive
+  if (msg.type === 'interactive' && msg.interactive) {
+    const i = msg.interactive;
+    if (i.type === 'button_reply' && i.button_reply?.title) return i.button_reply.title;
+    if (i.type === 'list_reply'   && i.list_reply?.title)   return i.list_reply.title;
   }
-}
 
-async function enviarTexto(toNumber, bodyText) {
-  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
-    logLine('❌ Falta WABA_TOKEN o PHONE_NUMBER_ID, no se puede enviar.');
-    return;
-  }
+  // media u otros tipos: opcionalmente retorna el tipo
+  return msg.type || '';
+};
+
+const sendText = async (to, text) => {
   const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
     messaging_product: 'whatsapp',
-    to: toNumber,
+    to,
     type: 'text',
-    text: { body: bodyText },
+    text: { body: text }
   };
-  try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${WABA_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await r.json();
-    if (!r.ok) {
-      console.error('❌ Error API al enviar:', data);
-    } else {
-      logLine(`✔️ Auto-reply enviado a ${toNumber}. id=${data?.messages?.[0]?.id || 'n/a'}`);
-    }
-  } catch (err) {
-    console.error('❌ Error de red al enviar:', err);
-  }
-}
 
-function extraerTextoDeMensaje(msg) {
-  if (!msg) return '';
-  // texto normal
-  if (msg.type === 'text' && msg.text?.body) return msg.text.body;
+  const res = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${WABA_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: 15000
+  });
 
-  // botones / listas
-  if (msg.type === 'interactive' && msg.interactive) {
-    const it = msg.interactive;
-    if (it.type === 'button_reply' && it.button_reply?.title) return it.button_reply.title;
-    if (it.type === 'list_reply' && it.list_reply?.title) return it.list_reply.title;
-  }
-  return '';
-}
+  // Logs de estado de entrega
+  const mid = res.data?.messages?.[0]?.id || 'n/a';
+  console.log(`↪︎ Enviado a ${to} | msgId=${mid}`);
+};
 
-// === Health/endpoints básicos ===
-app.get('/', (_, res) => res.send('OK'));
-app.get('/healthz', (_, res) => res.json({ ok: true, ts: Date.now() }));
+// ===== Endpoints mínimos =====
+app.get('/', (req, res) => res.send('ok'));
+app.get('/healthz', (req, res) => res.send('ok'));
 
-// === Webhook Verify (GET) ===
+// Verificación de webhook (Meta)
 app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
+  const mode  = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const chall = req.query['hub.challenge'];
+
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    logLine('🔐 Webhook verificado (GET).');
-    return res.status(200).send(challenge);
+    console.log('✅ Webhook verificado (GET).');
+    return res.status(200).send(chall);
   }
-  logLine('❌ Verificación fallida (GET).');
   return res.sendStatus(403);
 });
 
-// === Webhook Receiver (POST) ===
-app.post('/webhook', (req, res) => {
-  // responder rápido para que Meta no corte
-  res.sendStatus(200);
+// Recepción de eventos
+app.post('/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+    // Meta/WABA envía esta forma
+    if (body?.object && Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
+        const change = entry.changes?.[0];
+        const value  = change?.value;
 
-  if (!validarFirma(req)) return;
+        // Mensajes entrantes
+        const msg = value?.messages?.[0];
+        if (msg) {
+          const from  = msg.from; // número del usuario (E.164 sin +)
+          const name  = value?.contacts?.[0]?.profile?.name || 'n/a';
+          const text  = getMessageText(msg);
+          console.log(`💬 Mensaje de ${from} (${name}) | texto="${text}"`);
 
-  const body = req.body;
-  if (body?.object !== 'whatsapp_business_account') return;
+          // Reglas
+          const n = normalize(text);
+          let reply = null;
 
-  const entries = body.entry || [];
-  for (const entry of entries) {
-    const changes = entry.changes || [];
-    for (const change of changes) {
-      const value = change.value || {};
+          if (n === 'no estoy interesado') {
+            reply = 'Perfecto borramos su registro. Gracias';
+            console.log('↪︎ Acción: respuesta "no interesado"');
+          } else if (n === 'gracias' || n === 'si' || n === 'sí') {
+            reply = null;
+            console.log('↪︎ Acción: sin respuesta (gracias/si)');
+          } else if (text) {
+            reply = 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias';
+            console.log('↪︎ Acción: respuesta automática general');
+          }
 
-      // Log de meta del número
-      const md = value.metadata || {};
-      if (md.display_phone_number || md.phone_number_id) {
-        logLine(
-          `WABA meta -> display_phone_number=${md.display_phone_number || 'n/a'} phone_number_id=${md.phone_number_id || 'n/a'}`
-        );
-      }
-
-      // Logs de estados
-      if (Array.isArray(value.statuses)) {
-        for (const st of value.statuses) {
-          logLine(`Status: to=${st.recipient_id} status=${st.status} msgId=${st.id} conv=${st.conversation?.id || 'n/a'}`);
+          // Enviar si corresponde
+          if (reply) {
+            try {
+              await sendText(from, reply);
+            } catch (err) {
+              console.error('❌ Error al enviar respuesta:',
+                err?.response?.status,
+                JSON.stringify(err?.response?.data || err.message));
+            }
+          }
         }
-      }
 
-      // Mensajes entrantes
-      if (Array.isArray(value.messages)) {
-        for (const msg of value.messages) {
-          const from = msg.from;
-          const texto = extraerTextoDeMensaje(msg);
-
-          // Log del mensaje recibido
-          logLine(`Mensaje de ${from} | texto="${texto || '(no-text)'}"`);
-
-          // Normalizamos para evaluar reglas
-          const t = normalize(texto).replace(/[^\p{L}\p{N}\s]/gu, '').trim();
-
-          if (t.includes('no estoy interesado')) {
-            enviarTexto(from, 'Perfecto borramos su registro. Gracias');
-          } else if (t === 'gracias' || t === 'si' || t === 'si.' || t === 'si ' || t === 'sí' || t === 'sí.' || t === 'sí ') {
-            logLine(`Sin respuesta a "${texto}" (regla de silencio).`);
-          } else if (texto) {
-            enviarTexto(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
-          } else {
-            // mensaje sin texto (sticker/imagen/etc.)
-            enviarTexto(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
+        // Status (delivered/read/etc.)
+        const statuses = value?.statuses;
+        if (Array.isArray(statuses)) {
+          for (const st of statuses) {
+            console.log(
+              `🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`
+            );
           }
         }
       }
     }
+    res.sendStatus(200);
+  } catch (e) {
+    console.error('❌ Error en /webhook:', e?.message || e);
+    res.sendStatus(200); // siempre 200 para no reintentos infinitos
   }
 });
 
-// === Arranque ===
-const PORT = process.env.PORT || 3000;
+// Arranque
 app.listen(PORT, () => {
-  logLine(`Servidor escuchando en puerto ${PORT}`);
-  if (!WABA_TOKEN || !PHONE_NUMBER_ID) {
-    logLine('⚠️ Revisa WABA_TOKEN/PHONE_NUMBER_ID; son obligatorios.');
-  }
+  console.log(`Servidor escuchando en puerto ${PORT}`);
+  console.log('////////////////////////////////////////////////////////');
+  console.log(`==> Your service is live 🎉`);
+  console.log('////////////////////////////////////////////////////////');
 });
