@@ -1,29 +1,30 @@
-// ====== Webhook WhatsApp + Respuestas + Email (Gmail APP Password) ======
+// ====== Webhook WhatsApp + Respuestas + Email (Gmail App Password) ======
 const express = require('express');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ⚠️ NO usar app.use(express.json()) antes del webhook: necesitamos el body crudo para la firma
+// Si luego agregas otras rutas que sí necesiten JSON, ponlas después del /webhook
 
 // ------ Config ------
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN || '';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
-const APP_SECRET      = process.env.APP_SECRET || ''; // opcional para validar firma
+const WABA_TOKEN      = process.env.WABA_TOKEN || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '756528907544969';
+const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // opcional para validar firma
 
 // Email (Gmail con contraseña de aplicación)
-const SMTP_USER = ricardomartinez19b@gmail.com
-const SMTP_PASS = process.env.SMTP_PASS || 'uwdlbouzhvkdshpt';
-const SMTP_TO   = ricardo.martinezh@unidep.edu.mx
-const SMTP_FROM = UNIDEP Bot <ricardomartinez19b@gmail.com>
-const SMTP_PASS = uwdlbouzhvkdshpt
-const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
-const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_USER   = process.env.SMTP_USER   || 'ricardomartinez19b@gmail.com';
+const SMTP_PASS   = process.env.SMTP_PASS   || 'uwdlbouzhvkdshpt'; // SIN espacios
+const SMTP_TO     = process.env.SMTP_TO     || 'ricardo.martinezh@unidep.edu.mx';
+const SMTP_FROM   = process.env.SMTP_FROM   || 'UNIDEP Bot <ricardomartinez19b@gmail.com>';
+const SMTP_HOST   = process.env.SMTP_HOST   || 'smtp.gmail.com';
+const SMTP_PORT   = Number(process.env.SMTP_PORT || 465);
+const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true') === 'true'; // true para 465
 
 // Enlace para interesados
-const INTEREST_LINK = process.env.INTEREST_LINK || 'https://wa.me/523349834926?text=Hola%20me%20interesa%20saber%20m%C3%A1s';
+const INTEREST_LINK = process.env.INTEREST_LINK
+  || 'https://wa.me/523349834926?text=Hola%20me%20interesa%20saber%20m%C3%A1s';
 
 // Puerto
 const PORT = process.env.PORT || 3000;
@@ -49,11 +50,11 @@ function getHeaderSignature(req) {
   return req.get('x-hub-signature-256') || '';
 }
 
-function validateSignature(reqBody, signature) {
+function validateSignature(rawBody, signature) {
   if (!APP_SECRET) return true; // si no hay secreto, no validamos firma
   try {
     const hmac = crypto.createHmac('sha256', APP_SECRET);
-    hmac.update(reqBody);
+    hmac.update(rawBody);
     const expected = 'sha256=' + hmac.digest('hex');
     return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
   } catch {
@@ -119,12 +120,12 @@ async function sendEmailNoInteresado({ fromWa, name, text }) {
 
   try {
     await transporter.sendMail({
-      from: `"UNIDEP Bot" <${SMTP_USER}>`,
-      to: DEST_EMAIL,
+      from: SMTP_FROM,
+      to: SMTP_TO,
       subject,
       html
     });
-    log('📨 Email enviado a', DEST_EMAIL);
+    log('📨 Email enviado a', SMTP_TO);
   } catch (e) {
     log('❌ Error enviando email:', e.message);
   }
@@ -156,11 +157,6 @@ function extractIncoming(body) {
       text = msg.text?.body || '';
     }
 
-    // quick reply (botón)
-    if (msg.type === 'button') {
-      text = msg.button?.text || msg.button?.payload || 'boton';
-    }
-
     // interactive (button_reply o list_reply)
     if (msg.type === 'interactive') {
       const br = msg.interactive?.button_reply;
@@ -169,13 +165,7 @@ function extractIncoming(body) {
       if (lr) text = lr.title || lr.id || 'lista';
     }
 
-    return {
-      type: 'message',
-      fromWa,
-      name,
-      text,
-      raw: msg
-    };
+    return { type: 'message', fromWa, name, text, raw: msg };
   } catch {
     return { type: 'unknown' };
   }
@@ -190,7 +180,9 @@ async function handleAutoReply({ fromWa, name, text }) {
     'no estoy interesado', 'no gracias', 'no', 'no me interesa',
     'no quiero', 'no estoy interesada', 'no estoy interesadx'
   ];
-  const esNoInteres = matchesAny(ntext, [...noInteres, 'boton no estoy interesado', 'boton no gracias', 'boton no']);
+  const esNoInteres = matchesAny(ntext, [
+    ...noInteres, 'boton no estoy interesado', 'boton no gracias', 'boton no'
+  ]);
 
   if (esNoInteres) {
     log('↪︎ Acción: respuesta "no interesado"');
@@ -220,7 +212,10 @@ async function handleAutoReply({ fromWa, name, text }) {
 
   // 4) Por defecto => mensaje de espera
   log('↪︎ Acción: respuesta por defecto');
-  await sendWhatsAppText(fromWa, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
+  await sendWhatsAppText(
+    fromWa,
+    'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias'
+  );
 }
 
 // ------ Webhook GET (verificación) ------
@@ -238,51 +233,57 @@ app.get('/webhook', (req, res) => {
 });
 
 // ------ Webhook POST (eventos) ------
-app.post('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
-  // Validación de firma (opcional)
-  const sig = getHeaderSignature(req);
-  if (!validateSignature(req.body, sig)) {
-    log('❌ Firma X-Hub-Signature inválida.');
-    return res.sendStatus(401);
-  }
-  // Express.raw nos deja el body como Buffer, parseamos y seguimos con el resto
-  try {
-    const json = JSON.parse(req.body.toString('utf8'));
-    // Pasamos JSON al siguiente handler
-    req.parsedBody = json;
-    next();
-  } catch {
-    log('❌ Body inválido');
-    return res.sendStatus(400);
-  }
-}, async (req, res) => {
-  const body = req.parsedBody;
-
-  const incoming = extractIncoming(body);
-  if (incoming.type === 'status') {
-    const st = incoming.status;
-    log(`🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || st.message_id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`);
-    return res.sendStatus(200);
-  }
-
-  if (incoming.type === 'message') {
-    const { fromWa, name, text } = incoming;
-    log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
-    try {
-      await handleAutoReply({ fromWa, name, text });
-    } catch (e) {
-      log('❌ Error en auto-reply:', e.message);
+app.post(
+  '/webhook',
+  express.raw({ type: 'application/json' }), // importante para firma
+  async (req, res) => {
+    // Validación de firma (opcional)
+    const sig = getHeaderSignature(req);
+    if (!validateSignature(req.body, sig)) {
+      log('❌ Firma X-Hub-Signature inválida.');
+      return res.sendStatus(401);
     }
+
+    // req.body es Buffer; parseamos a JSON
+    let json;
+    try {
+      json = JSON.parse(req.body.toString('utf8'));
+    } catch {
+      log('❌ Body inválido');
+      return res.sendStatus(400);
+    }
+
+    const incoming = extractIncoming(json);
+
+    if (incoming.type === 'status') {
+      const st = incoming.status;
+      log(
+        `🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || st.message_id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`
+      );
+      return res.sendStatus(200);
+    }
+
+    if (incoming.type === 'message') {
+      const { fromWa, name, text } = incoming;
+      log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
+      try {
+        await handleAutoReply({ fromWa, name, text });
+      } catch (e) {
+        log('❌ Error en auto-reply:', e.message);
+      }
+      return res.sendStatus(200);
+    }
+
+    // desconocido
+    log('ℹ️ Evento no reconocido');
     return res.sendStatus(200);
   }
-
-  // desconocido
-  log('ℹ️ Evento no reconocido');
-  return res.sendStatus(200);
-});
+);
 
 // ------ Health & root ------
-app.get('/healthz', (req, res) => res.status(200).json({ ok: true, uptime: process.uptime() }));
+app.get('/healthz', (req, res) =>
+  res.status(200).json({ ok: true, uptime: process.uptime() })
+);
 app.get('/', (req, res) => res.send('Webhook UNIDEP listo ✅'));
 
 app.listen(PORT, () => {
