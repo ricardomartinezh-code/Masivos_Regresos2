@@ -1,200 +1,266 @@
-// index.js (CommonJS)
-const express = require('express');
-const axios = require('axios');
-const nodemailer = require('nodemailer');
+// index.js
+import express from 'express';
+import crypto from 'crypto';
+import axios from 'axios';
+import bodyParser from 'body-parser';
+import nodemailer from 'nodemailer';
 
 const app = express();
-app.use(express.json());
 
-// ===== Credenciales WABA (con fallback a ENV) =====
-const VERIFY_TOKEN     = process.env.VERIFY_TOKEN     || 'mi_verify_token_super_seguro';
-const WABA_TOKEN       = process.env.WABA_TOKEN       || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
-const PHONE_NUMBER_ID  = process.env.PHONE_NUMBER_ID  || '756528907544969';
-const APP_SECRET       = process.env.APP_SECRET       || '89bb6d2367a4ab0ad3e94021e7cb2046'; // (no usado aquí)
+// Guardamos el raw body para validar firma (si hay APP_SECRET)
+app.use(
+  bodyParser.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 
-// ===== Config de correo (definida vía ENV en Render) =====
-// Para Gmail con App Password: SMTP_HOST=smtp.gmail.com, SMTP_PORT=465, SMTP_SECURE=true
-const SMTP_HOST   = process.env.SMTP_HOST   || '';
-const SMTP_PORT   = Number(process.env.SMTP_PORT || 465);
-const SMTP_USER   = process.env.SMTP_USER   || '';
-const SMTP_PASS   = process.env.SMTP_PASS   || '';
-const SMTP_SECURE = (process.env.SMTP_SECURE || 'true') === 'true';
-const MAIL_FROM   = process.env.MAIL_FROM   || ''; // ej. "UNIDEP Bot <notificaciones@unidep.edu.mx>"
-const MAIL_TO     = process.env.MAIL_TO     || ''; // ej. "ricardo.martinezh@unidep.edu.mx"
+/* ======= Credenciales ======= */
+const VERIFY_TOKEN =
+  process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
 
-const emailEnabled = SMTP_HOST && SMTP_USER && SMTP_PASS && MAIL_FROM && MAIL_TO;
-let transporter = null;
+const WABA_TOKEN =
+  process.env.WABA_TOKEN ||
+  // Fallback que me diste
+  'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
 
-if (emailEnabled) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-  });
-  console.log('✉️  Email notifications: ENABLED');
-} else {
-  console.log('✉️  Email notifications: DISABLED (faltan variables SMTP*)');
+const PHONE_NUMBER_ID =
+  process.env.PHONE_NUMBER_ID || '756528907544969';
+
+const APP_SECRET =
+  process.env.APP_SECRET ||
+  '89bb6d2367a4ab0ad3e94021e7cb2046';
+
+// SMTP (solo desde env; si no hay pass, no se envía correo)
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = process.env.SMTP_USER || '';
+const SMTP_PASS = process.env.SMTP_PASS || ''; // <- contraseña de app
+const EMAIL_FROM =
+  process.env.EMAIL_FROM || 'UNIDEP Bot <ricardomartinez19b@gmail.com>';
+const EMAIL_TO = process.env.EMAIL_TO || ''; // a quién reenviar “no interesado”
+
+const canEmail = SMTP_USER && SMTP_PASS && EMAIL_TO;
+
+const mailer = canEmail
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+    })
+  : null;
+
+/* ======= Utils ======= */
+function validateSignature(req) {
+  if (!APP_SECRET) return true; // sin secreto, no validamos
+  try {
+    const signature = req.headers['x-hub-signature-256'];
+    if (!signature) return false;
+    const hmac = crypto
+      .createHmac('sha256', APP_SECRET)
+      .update(req.rawBody)
+      .digest('hex');
+    return signature === `sha256=${hmac}`;
+  } catch {
+    return false;
+  }
 }
 
-// ===== Utilidades =====
-const PORT = process.env.PORT || 10000;
+function normalize(str = '') {
+  return String(str)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^\p{Letter}\p{Number}\s]/gu, '')
+    .trim();
+}
 
-const normalize = (s='') =>
-  s.toString()
-   .trim()
-   .toLowerCase()
-   .normalize('NFD')
-   .replace(/\p{Diacritic}/gu, ''); // quita acentos
+// Extrae el texto real del mensaje (texto, botón interactivo, lista, etc.)
+function getIncomingText(msg) {
+  if (!msg) return { text: '', source: 'unknown' };
 
-const getMessageText = (msg) => {
-  if (!msg) return '';
-  // texto directo
-  if (msg.type === 'text' && msg.text?.body) return msg.text.body;
+  const t = msg.type;
 
-  // botones/interactive
-  if (msg.type === 'interactive' && msg.interactive) {
-    const i = msg.interactive;
-    if (i.type === 'button_reply' && i.button_reply?.title) return i.button_reply.title;
-    if (i.type === 'list_reply'   && i.list_reply?.title)   return i.list_reply.title;
+  if (t === 'text' && msg.text?.body) {
+    return { text: msg.text.body, source: 'text' };
   }
 
-  return msg.type || '';
-};
+  // Formato moderno de interactivos
+  if (t === 'interactive' && msg.interactive) {
+    const it = msg.interactive;
+    if (it.type === 'button_reply' && it.button_reply) {
+      const title = it.button_reply.title || '';
+      const id = it.button_reply.id || '';
+      return { text: title || id || 'boton', source: 'button_reply', id };
+    }
+    if (it.type === 'list_reply' && it.list_reply) {
+      const title = it.list_reply.title || '';
+      const id = it.list_reply.id || '';
+      return { text: title || id, source: 'list_reply', id };
+    }
+  }
 
-const sendText = async (to, text) => {
+  // Formato antiguo de botones
+  if (t === 'button' && msg.button) {
+    const title = msg.button.text || msg.button.title || '';
+    const id = msg.button.payload || '';
+    return { text: title || id || 'boton', source: 'button', id };
+  }
+
+  return { text: '', source: t || 'unknown' };
+}
+
+function isNoInteresado(text, btnId = '') {
+  const n = normalize(text);
+  const id = normalize(btnId || '');
+  const patterns = [
+    /^no$/,
+    /^no gracias$/,
+    /no estoy interesad[oa]/,
+    /no\s*interesad[oa]/,
+  ];
+  if (patterns.some((re) => re.test(n))) return true;
+
+  const idMatches = ['no', 'no_gracias', 'nointeresado', 'no_interesado'];
+  if (id && idMatches.includes(id)) return true;
+
+  return false;
+}
+
+function isSilence(text) {
+  const n = normalize(text);
+  return n === 'gracias' || n === 'si' || n === 'sí';
+}
+
+async function sendWAText(to, body) {
   const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
     messaging_product: 'whatsapp',
     to,
     type: 'text',
-    text: { body: text }
+    text: { body },
   };
-
-  const res = await axios.post(url, payload, {
+  return axios.post(url, payload, {
     headers: {
       Authorization: `Bearer ${WABA_TOKEN}`,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
     },
-    timeout: 15000
+    timeout: 15000,
   });
+}
 
-  const mid = res.data?.messages?.[0]?.id || 'n/a';
-  console.log(`↪︎ Enviado a ${to} | msgId=${mid}`);
-};
-
-// Enviar email cuando digan "No estoy interesado"
-const sendNoInteresadoEmail = async ({ fromNumber, name, text }) => {
-  if (!emailEnabled) {
-    console.log('✉️  (omitido) Email no configurado.');
+async function sendNoInteresadoEmail({ from, name, text }) {
+  if (!canEmail) {
+    console.log('📧 (omitido) Email no configurado.');
     return;
   }
-  const subject = `No interesado: ${fromNumber} (${name || 'sin nombre'})`;
+  const subject = `NO INTERESADO - ${from}`;
   const html = `
-    <h3>Nuevo "No estoy interesado"</h3>
-    <ul>
-      <li><b>Número:</b> ${fromNumber}</li>
-      <li><b>Nombre:</b> ${name || 'n/a'}</li>
-      <li><b>Mensaje:</b> ${text || 'n/a'}</li>
-      <li><b>Fecha:</b> ${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</li>
-    </ul>
+    <h3>Contacto marcó "No interesado"</h3>
+    <p><b>Número:</b> ${from}</p>
+    <p><b>Nombre:</b> ${name || 'N/D'}</p>
+    <p><b>Texto/ botón:</b> ${text || 'N/D'}</p>
+    <p>Fecha: ${new Date().toLocaleString('es-MX')}</p>
   `;
-  const info = await transporter.sendMail({
-    from: MAIL_FROM,
-    to: MAIL_TO,
+  await mailer.sendMail({
+    from: EMAIL_FROM,
+    to: EMAIL_TO,
     subject,
-    html
+    html,
   });
-  console.log(`✉️  Email enviado: ${info.messageId || 'ok'}`);
-};
+  console.log('📧 Email enviado ✅');
+}
 
-// ===== Endpoints mínimos =====
-app.get('/', (req, res) => res.send('ok'));
-app.get('/healthz', (req, res) => res.send('ok'));
+/* ======= Rutas ======= */
 
-// Verificación de webhook (Meta)
+// Health checks
+app.get('/', (_, res) => res.send('OK'));
+app.get('/healthz', (_, res) => res.json({ ok: true }));
+
+// Verificación (GET)
 app.get('/webhook', (req, res) => {
-  const mode  = req.query['hub.mode'];
+  const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
-  const chall = req.query['hub.challenge'];
+  const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
     console.log('✅ Webhook verificado (GET).');
-    return res.status(200).send(chall);
+    return res.status(200).send(challenge);
   }
   return res.sendStatus(403);
 });
 
-// Recepción de eventos
+// Recepción de eventos (POST)
 app.post('/webhook', async (req, res) => {
+  if (!validateSignature(req)) {
+    console.log('❌ Firma inválida (X-Hub-Signature-256).');
+    return res.sendStatus(403);
+  }
+
+  const body = req.body;
+
+  // Confirmamos recepción rápido
+  res.sendStatus(200);
+
   try {
-    const body = req.body;
-    if (body?.object && Array.isArray(body.entry)) {
-      for (const entry of body.entry) {
-        const change = entry.changes?.[0];
-        const value  = change?.value;
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const val = change?.value;
 
-        // Mensajes entrantes
-        const msg = value?.messages?.[0];
-        if (msg) {
-          const from  = msg.from; // número E.164 sin '+'
-          const name  = value?.contacts?.[0]?.profile?.name || 'n/a';
-          const text  = getMessageText(msg);
-          console.log(`💬 Mensaje de ${from} (${name}) | texto="${text}"`);
-
-          const n = normalize(text);
-          let reply = null;
-
-          if (n === 'no estoy interesado') {
-            reply = 'Perfecto borramos su registro. Gracias';
-            console.log('↪︎ Acción: respuesta "no interesado"');
-            // Notificar por correo
-            try {
-              await sendNoInteresadoEmail({ fromNumber: from, name, text });
-            } catch (err) {
-              console.error('❌ Error al enviar email:', err?.message || err);
-            }
-          } else if (n === 'gracias' || n === 'si' || n === 'sí') {
-            reply = null;
-            console.log('↪︎ Acción: sin respuesta (gracias/si)');
-          } else if (text) {
-            reply = 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias';
-            console.log('↪︎ Acción: respuesta automática general');
-          }
-
-          if (reply) {
-            try {
-              await sendText(from, reply);
-            } catch (err) {
-              console.error('❌ Error al enviar respuesta:',
-                err?.response?.status,
-                JSON.stringify(err?.response?.data || err.message));
-            }
-          }
-        }
-
-        // Status de entrega/lectura
-        const statuses = value?.statuses;
-        if (Array.isArray(statuses)) {
-          for (const st of statuses) {
-            console.log(
-              `🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`
-            );
-          }
-        }
+    // Status de mensajes (enviados, entregados, leídos)
+    const statuses = val?.statuses;
+    if (Array.isArray(statuses)) {
+      for (const st of statuses) {
+        const to = st.recipient_id || 'n/a';
+        console.log(
+          `🔔 Status: to=${to} status=${st.status} msgId=${st.id} conv=${st.conversation?.id || 'n/a'}`
+        );
       }
     }
-    res.sendStatus(200);
+
+    // Mensajes entrantes
+    const messages = val?.messages;
+    if (Array.isArray(messages)) {
+      const msg = messages[0];
+      const from = msg.from;
+      const contact = val?.contacts?.[0];
+      const name = contact?.profile?.name || contact?.wa_id || 'N/D';
+
+      const { text, source, id } = getIncomingText(msg);
+
+      console.log(
+        `💬 Mensaje de ${from} (${name}) | texto="${text}" (tipo:${source})`
+      );
+
+      // Reglas
+      if (isNoInteresado(text, id)) {
+        console.log('↪️ Acción: responde "no interesado"');
+        await sendWAText(from, 'Perfecto borramos su registro. Gracias');
+        await sendNoInteresadoEmail({ from, name, text });
+        return;
+      }
+
+      if (isSilence(text)) {
+        console.log('🤐 Regla: no responder (si/gracias).');
+        return;
+      }
+
+      // Respuesta por defecto
+      await sendWAText(
+        from,
+        'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias'
+      );
+      console.log('➡️ Auto-reply enviado.');
+    }
   } catch (e) {
-    console.error('❌ Error en /webhook:', e?.message || e);
-    res.sendStatus(200);
+    console.error('❌ Error procesando webhook:', e?.response?.data || e);
   }
 });
 
-// Arranque
+/* ======= Inicio ======= */
+const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, () => {
-  console.log(`Servidor escuchando en puerto ${PORT}`);
-  console.log('////////////////////////////////////////////////////////');
-  console.log(`==> Your service is live 🎉`);
-  console.log('////////////////////////////////////////////////////////');
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
 });
