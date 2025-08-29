@@ -1,254 +1,293 @@
-// ------------------------------
-// UNIDEP Webhook WhatsApp Cloud
-// ------------------------------
+// ====== Webhook WhatsApp + Respuestas + Email (Gmail APP Password) ======
 const express = require('express');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
-// ====== CONFIG ======
-const PORT = process.env.PORT || 10000;
-
-// Claves de WhatsApp Cloud API (con los valores que me diste como fallback)
-const VERIFY_TOKEN    = process.env.VERIFY_TOKEN     || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN       || 'EAALJbUFKlZCIBPZAC4QZAYEAghngQDfWlEBRQxZCNAxZCUN0MlYWQkThiqFqQfI9BHB9S8B55dc2Ls9rnn3bFH4QHxfpATWYSHQZCipn831vPLH1ra1TSDSRJ7ThbmZBYKNEEpBMdZAuq0gUyVeD3nZCOsBD9jMEdkKNZBdgmaPtbNmyR9w2ujiz3PTm1tjJ51ZBfHIhAZDZD';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID  || '756528907544969';
-const APP_SECRET      = process.env.APP_SECRET       || '89bb6d2367a4ab0ad3e94021e7cb2046';
-const WA_API_VERSION  = process.env.WA_API_VERSION   || 'v23.0';
-
-// SMTP (si los pones se enviarán correos)
-const SMTP_HOST   = process.env.SMTP_HOST   || 'smtp.gmail.com';
-const SMTP_PORT   = parseInt(process.env.SMTP_PORT || '465', 10);
-const SMTP_USER   = process.env.SMTP_USER   || 'ricardomartinez19b@gmail.com';   // ej. ricardomartinez19b@gmail.com
-const SMTP_PASS   = process.env.SMTP_PASS   || 'uwdlbouzhvkdshpt';   // contraseña de aplicación (16 chars, sin espacios)
-const SMTP_FROM   = process.env.SMTP_FROM   || 'UNIDEP Bot <ricardomartinez19b@gmail.com>';
-const SMTP_TO     = process.env.SMTP_TO     || 'ricardo.martinezh@unidep.edu.mx';   // destinatario(s) separados por coma
-
-// ====== APP ======
 const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Guardar rawBody para validar firma si hay APP_SECRET
-app.use(express.json({
-  verify: (req, res, buf) => { req.rawBody = buf; }
-}));
+// ------ Config ------
+const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
+const WABA_TOKEN      = process.env.WABA_TOKEN || '';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
+const APP_SECRET      = process.env.APP_SECRET || ''; // opcional para validar firma
 
-// ====== UTILIDADES ======
-const TRIGGERS = {
-  uninterested: [
-    'no estoy interesado', 'no estoy interesada', 'no estoy interesadx',
-    'no me interesa', 'no gracias', 'no, gracias', 'no'
-  ],
-  silent: [
-    'si', 'sí', 'ok', 'gracias', 'va', 'de acuerdo', 'perfecto'
-  ]
-};
+// Email (Gmail con contraseña de aplicación)
+const SMTP_USER = ricardomartinez19b@gmail.com
+const SMTP_PASS = process.env.SMTP_PASS || 'uwdlbouzhvkdshpt';
+const SMTP_TO   = ricardo.martinezh@unidep.edu.mx
+const SMTP_FROM = UNIDEP Bot <ricardomartinez19b@gmail.com>
+const SMTP_PASS = uwdlbouzhvkdshpt
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
 
-function norm(s) {
-  return String(s || '')
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // sin acentos
-    .replace(/[^\p{L}\p{N}\s]/gu, '')                 // sin signos
-    .replace(/\s+/g, ' ')
-    .trim();
+// Enlace para interesados
+const INTEREST_LINK = process.env.INTEREST_LINK || 'https://wa.me/523349834926?text=Hola%20me%20interesa%20saber%20m%C3%A1s';
+
+// Puerto
+const PORT = process.env.PORT || 3000;
+
+// ------ Utils ------
+const log = (...args) => console.log(...args);
+
+function normalizeText(s = '') {
+  return String(s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quita acentos
+    .toLowerCase().trim();
 }
 
-// Extrae texto de text/button/list
-function extractIncomingText(msg) {
+function matchesAny(text, patterns = []) {
+  const t = normalizeText(text);
+  return patterns.some(p => {
+    const n = normalizeText(p);
+    return t === n || t.includes(n);
+  });
+}
+
+function getHeaderSignature(req) {
+  return req.get('x-hub-signature-256') || '';
+}
+
+function validateSignature(reqBody, signature) {
+  if (!APP_SECRET) return true; // si no hay secreto, no validamos firma
   try {
-    if (!msg) return '';
-
-    if (msg.type === 'text' && msg.text && msg.text.body) {
-      return msg.text.body;
-    }
-    if (msg.type === 'interactive' && msg.interactive) {
-      const it = msg.interactive;
-      if (it.type === 'button_reply' && it.button_reply) {
-        return it.button_reply.title || it.button_reply.id || 'boton';
-      }
-      if (it.type === 'list_reply' && it.list_reply) {
-        return it.list_reply.title || it.list_reply.id || 'lista';
-      }
-    }
-    if (msg.button && msg.button.text) return msg.button.text;
-  } catch (_) {}
-  return '';
-}
-
-function classifyIntent(rawText) {
-  const t = norm(rawText);
-
-  const isUninterested =
-    t === 'no' ||
-    t === 'no gracias' ||
-    t.includes('no estoy interesa') ||
-    t.includes('no me interesa') ||
-    TRIGGERS.uninterested.some(x => t === norm(x));
-
-  if (isUninterested) return 'uninterested';
-
-  const isSilent =
-    t === 'si' || t === 'sí' ||
-    TRIGGERS.silent.some(x => t === norm(x));
-
-  if (isSilent) return 'silent';
-
-  return 'default';
-}
-
-function validateSignature(req) {
-  if (!APP_SECRET) return true; // si no hay secreto, no validamos
-  try {
-    const sig = req.headers['x-hub-signature-256'];
-    if (!sig) return false;
-    const expected = 'sha256=' + crypto.createHmac('sha256', APP_SECRET)
-      .update(req.rawBody)
-      .digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    const hmac = crypto.createHmac('sha256', APP_SECRET);
+    hmac.update(reqBody);
+    const expected = 'sha256=' + hmac.digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
   } catch {
     return false;
   }
 }
 
-async function sendText(to, text) {
-  const url = `https://graph.facebook.com/${WA_API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+// ------ Envío de WhatsApp ------
+async function sendWhatsAppText(to, body) {
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
   const payload = {
     messaging_product: 'whatsapp',
     to,
     type: 'text',
-    text: { preview_url: false, body: text }
+    text: { body }
   };
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${WABA_TOKEN}`,
+      Authorization: `Bearer ${WABA_TOKEN}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(payload)
   });
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    console.error('❌ Error enviando mensaje:', res.status, JSON.stringify(data));
+    log('❌ Error enviando WA:', res.status, JSON.stringify(data));
+  } else {
+    log('📤 Enviado a', to, '| msgId=', data.messages?.[0]?.id || 'n/a');
   }
-  return data;
+  return { ok: res.ok, data };
 }
 
-async function notifyByEmail({ fromPhone, body, kind }) {
-  if (!SMTP_USER || !SMTP_PASS || !SMTP_TO) {
-    console.log('✉️  (omitido) Email no configurado.');
-    return;
-  }
-  const transporter = nodemailer.createTransport({
+// ------ Email ------
+const emailEnabled = SMTP_USER && SMTP_PASS && SMTP_TO && SMTP_FROM;
+let transporter = null;
+
+if (emailEnabled) {
+  transporter = nodemailer.createTransport({
     host: SMTP_HOST,
     port: SMTP_PORT,
-    secure: SMTP_PORT === 465,
+    secure: SMTP_SECURE,
     auth: { user: SMTP_USER, pass: SMTP_PASS }
   });
-
-  const subject = `[No interesado] ${fromPhone}`;
-  const text =
-    `Teléfono: ${fromPhone}\n` +
-    `Mensaje: ${body}\n` +
-    `Tipo: ${kind || 'NO_INTERESADO'}\n` +
-    `Fecha: ${new Date().toISOString()}`;
-
-  await transporter.sendMail({
-    from: SMTP_FROM,
-    to: SMTP_TO,
-    subject,
-    text
-  });
-  console.log(`✉️  Email enviado -> ${SMTP_TO}`);
+  log('📧 Email notifications: ENABLED');
+} else {
+  log('📪 Email notifications: DISABLED (faltan variables SMTP*)');
 }
 
-// ====== RUTAS ======
-app.get('/', (_req, res) => res.send('OK'));
-app.get('/healthz', (_req, res) => res.send('ok'));
+async function sendEmailNoInteresado({ fromWa, name, text }) {
+  if (!emailEnabled) return;
 
-// Verificación del webhook (GET)
+  const subject = `Baja / No interesado - ${fromWa}${name ? ` (${name})` : ''}`;
+  const html = `
+    <h2>Solicitud de BAJA / NO INTERESADO</h2>
+    <p><b>Número:</b> ${fromWa}</p>
+    ${name ? `<p><b>Nombre:</b> ${name}</p>` : ''}
+    <p><b>Mensaje:</b> ${text || '(omito texto)'}</p>
+    <p>Fecha: ${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</p>
+  `;
+
+  try {
+    await transporter.sendMail({
+      from: `"UNIDEP Bot" <${SMTP_USER}>`,
+      to: DEST_EMAIL,
+      subject,
+      html
+    });
+    log('📨 Email enviado a', DEST_EMAIL);
+  } catch (e) {
+    log('❌ Error enviando email:', e.message);
+  }
+}
+
+// ------ Extraer texto y remitente del webhook ------
+function extractIncoming(body) {
+  try {
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+
+    // statuses (entregas, lecturas, etc.)
+    const status = value?.statuses?.[0];
+    if (status) {
+      return { type: 'status', status };
+    }
+
+    // mensajes
+    const msg = value?.messages?.[0];
+    if (!msg) return { type: 'unknown' };
+
+    const fromWa = msg.from; // número del usuario
+    const name = value?.contacts?.[0]?.profile?.name || '';
+    let text = '';
+
+    // text
+    if (msg.type === 'text') {
+      text = msg.text?.body || '';
+    }
+
+    // quick reply (botón)
+    if (msg.type === 'button') {
+      text = msg.button?.text || msg.button?.payload || 'boton';
+    }
+
+    // interactive (button_reply o list_reply)
+    if (msg.type === 'interactive') {
+      const br = msg.interactive?.button_reply;
+      const lr = msg.interactive?.list_reply;
+      if (br) text = br.title || br.id || 'boton';
+      if (lr) text = lr.title || lr.id || 'lista';
+    }
+
+    return {
+      type: 'message',
+      fromWa,
+      name,
+      text,
+      raw: msg
+    };
+  } catch {
+    return { type: 'unknown' };
+  }
+}
+
+// ------ Ruteo de respuestas ------
+async function handleAutoReply({ fromWa, name, text }) {
+  const ntext = normalizeText(text);
+
+  // 1) No interesado (incluye botones y variantes)
+  const noInteres = [
+    'no estoy interesado', 'no gracias', 'no', 'no me interesa',
+    'no quiero', 'no estoy interesada', 'no estoy interesadx'
+  ];
+  const esNoInteres = matchesAny(ntext, [...noInteres, 'boton no estoy interesado', 'boton no gracias', 'boton no']);
+
+  if (esNoInteres) {
+    log('↪︎ Acción: respuesta "no interesado"');
+    await sendWhatsAppText(fromWa, 'Perfecto, borramos su registro. Gracias');
+    await sendEmailNoInteresado({ fromWa, name, text });
+    return;
+  }
+
+  // 2) Gracias / Sí  => sin respuesta
+  const noResponder = ['gracias', 'si', 'sí', 'ok', 'va', 'vale', 'entendido'];
+  if (matchesAny(ntext, noResponder)) {
+    log('↪︎ Acción: no responder (agradecimiento/confirmación)');
+    return;
+  }
+
+  // 3) Interesado / informes => mandar enlace
+  const interesados = [
+    'estoy interesado', 'estoy interesada', 'quiero informes', 'informes',
+    'me interesa', 'mas info', 'más info', 'quiero informacion', 'quiero información'
+  ];
+  if (matchesAny(ntext, interesados)) {
+    const msg = `¡Excelente! Aquí tienes más información: ${INTEREST_LINK}`;
+    log('↪︎ Acción: interesado → enviar enlace');
+    await sendWhatsAppText(fromWa, msg);
+    return;
+  }
+
+  // 4) Por defecto => mensaje de espera
+  log('↪︎ Acción: respuesta por defecto');
+  await sendWhatsAppText(fromWa, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
+}
+
+// ------ Webhook GET (verificación) ------
 app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ Webhook verificado (GET).');
+    log('✅ Webhook verificado (GET).');
     return res.status(200).send(challenge);
   }
+  log('⛔ Webhook NO verificado (GET).');
   return res.sendStatus(403);
 });
 
-// Recepción de eventos (POST)
-app.post('/webhook', async (req, res) => {
-  // Firma opcional
-  if (!validateSignature(req)) {
-    console.error('⚠️  Firma inválida (X-Hub-Signature-256).');
+// ------ Webhook POST (eventos) ------
+app.post('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  // Validación de firma (opcional)
+  const sig = getHeaderSignature(req);
+  if (!validateSignature(req.body, sig)) {
+    log('❌ Firma X-Hub-Signature inválida.');
     return res.sendStatus(401);
   }
+  // Express.raw nos deja el body como Buffer, parseamos y seguimos con el resto
+  try {
+    const json = JSON.parse(req.body.toString('utf8'));
+    // Pasamos JSON al siguiente handler
+    req.parsedBody = json;
+    next();
+  } catch {
+    log('❌ Body inválido');
+    return res.sendStatus(400);
+  }
+}, async (req, res) => {
+  const body = req.parsedBody;
 
-  const body = req.body;
-  if (body && body.object === 'whatsapp_business_account') {
+  const incoming = extractIncoming(body);
+  if (incoming.type === 'status') {
+    const st = incoming.status;
+    log(`🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || st.message_id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`);
+    return res.sendStatus(200);
+  }
+
+  if (incoming.type === 'message') {
+    const { fromWa, name, text } = incoming;
+    log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
     try {
-      for (const entry of body.entry || []) {
-        for (const change of entry.changes || []) {
-          const v = change.value || {};
-
-          // Logs de estados (sent/delivered/read)
-          if (Array.isArray(v.statuses)) {
-            for (const st of v.statuses) {
-              console.log(
-                `🔔 Status: to=${st.recipient_id} status=${st.status}` +
-                (st.id ? ` msgId=${st.id}` : '') +
-                (st.conversation && st.conversation.id ? ` conv=${st.conversation.id}` : '')
-              );
-            }
-          }
-
-          // Mensajes entrantes
-          if (Array.isArray(v.messages)) {
-            for (const msg of v.messages) {
-              const from = msg.from; // teléfono del usuario
-              const rawText = extractIncomingText(msg);
-              console.log(`💬 Mensaje de ${from} | texto="${rawText}"`);
-
-              const intent = classifyIntent(rawText);
-
-              if (intent === 'uninterested') {
-                await sendText(from, 'Perfecto, borramos su registro. Gracias');
-                await notifyByEmail({
-                  fromPhone: from,
-                  body: rawText,
-                  kind: 'NO_INTERESADO'
-                });
-                console.log('↪️  Acción: respuesta a "no interesado"');
-              } else if (intent === 'silent') {
-                // no responder
-                console.log('🤫 Acción: silencio (sin respuesta)');
-              } else {
-                await sendText(from, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
-                console.log('↪️  Acción: auto-reply genérico');
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error('❌ Error en handler:', err);
+      await handleAutoReply({ fromWa, name, text });
+    } catch (e) {
+      log('❌ Error en auto-reply:', e.message);
     }
     return res.sendStatus(200);
   }
 
-  // no es un evento WABA
-  res.sendStatus(404);
+  // desconocido
+  log('ℹ️ Evento no reconocido');
+  return res.sendStatus(200);
 });
 
-// ====== START ======
+// ------ Health & root ------
+app.get('/healthz', (req, res) => res.status(200).json({ ok: true, uptime: process.uptime() }));
+app.get('/', (req, res) => res.send('Webhook UNIDEP listo ✅'));
+
 app.listen(PORT, () => {
-  console.log('/////////////////////////////////////////////////////////');
-  if (!SMTP_USER || !SMTP_PASS || !SMTP_TO) {
-    console.log('✉️  Email notifications: DISABLED (faltan variables SMTP*)');
-  } else {
-    console.log('✉️  Email notifications: ENABLED');
-  }
-  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
-  console.log('==> Your service is live 🎉');
-  console.log('/////////////////////////////////////////////////////////');
+  log('//////////////////////////////////////////////////////////');
+  if (!emailEnabled) log('📪 Email notifications: DISABLED (faltan variables SMTP*)');
+  log(`🚀 Servidor escuchando en puerto ${PORT}`);
+  log('//////////////////////////////////////////////////////////');
 });
