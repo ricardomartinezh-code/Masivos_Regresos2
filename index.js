@@ -9,7 +9,7 @@ const app = express();
 
 // ------ Config ------
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN || 'EAALJbUFKlZCIBPRbBTmecdkYxPgHkwgnK3LIZBRr59LpZCbiytrckHAZAq19Dc7kQCYyptE0sxgBv0Ftrad50it64veegedS3c2Rz51ZAfIIv6by2MFAlIWrr975J0pJJXCZAJi6rxMJVXUX2RSWUcFjSqXShtZA0Gun0LAZBNevJATedv0AH2ihfDYMSoteQzZBWSgZDZDghcgnNuy8aPr0mdi0XCy4wZDZD';
+const WABA_TOKEN      = process.env.WABA_TOKEN || 'EAALJbUFKlZCIBPbUPml75eLkhsn2ceECuUYhSuABYwcI6OuYfNEZAFmZBXS00GNYOBZA3FRypQ8gzbZA2ELIw3RY8MlvwPG17ZCZCk7Ra7jDQbJlam3xDZCU9ZBKl36lkRrtbP63p2ZAshrZAsfd9ki83v8PJljhYZCfXzr62L5mR3MtvsG0jNWlORH8dc8Ilu2EWZBAaZCVSjNQFZAhSUZDH2ihfDYMSoteQzZBWSgZDZDghcgnNuy8aPr0mdi0XCy4wZDZD';
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '756528907544969';
 const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // opcional para validar firma
 
