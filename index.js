@@ -134,88 +134,126 @@ async function sendEmailNoInteresado({ fromWa, name, text }) {
 // ------ Extraer texto y remitente del webhook ------
 function extractIncoming(body) {
   try {
-    const entry = body.entry?.[0];
+    const entry  = body.entry?.[0];
     const change = entry?.changes?.[0];
-    const value = change?.value;
+    const value  = change?.value;
 
-    // statuses (entregas, lecturas, etc.)
+    // Notificaciones de estado (delivered, read, etc.)
     const status = value?.statuses?.[0];
-    if (status) {
-      return { type: 'status', status };
-    }
+    if (status) return { type: 'status', status };
 
-    // mensajes
-    const msg = value?.messages?.[0];
+    // Mensaje entrante
+    const msg    = value?.messages?.[0];
     if (!msg) return { type: 'unknown' };
 
-    const fromWa = msg.from; // número del usuario
-    const name = value?.contacts?.[0]?.profile?.name || '';
-    let text = '';
+    const fromWa = msg.from;
+    const name   = value?.contacts?.[0]?.profile?.name || '';
 
-    // text
+    let text = '';
+    let meta = {};
+
+    // 1) Texto normal
     if (msg.type === 'text') {
       text = msg.text?.body || '';
     }
 
-    // interactive (button_reply o list_reply)
+    // 2) Respuesta de botón de template (type: "button")
+    if (msg.type === 'button') {
+      const b = msg.button || {};
+      text = b.text || b.payload || '';
+      meta = { kind: 'button', payload: b.payload || null, text: b.text || null };
+    }
+
+    // 3) Interactivos (quick reply o listas)
     if (msg.type === 'interactive') {
       const br = msg.interactive?.button_reply;
       const lr = msg.interactive?.list_reply;
-      if (br) text = br.title || br.id || 'boton';
-      if (lr) text = lr.title || lr.id || 'lista';
+      if (br) {
+        text = br.title || br.id || '';
+        meta = { kind: 'interactive_button', id: br.id || null, title: br.title || null };
+      }
+      if (lr) {
+        text = lr.title || lr.id || '';
+        meta = { kind: 'interactive_list', id: lr.id || null, title: lr.title || null };
+      }
     }
 
-    return { type: 'message', fromWa, name, text, raw: msg };
-  } catch {
+    // 4) Último recurso: si sigue vacío, loguea RAW para depurar
+    if (!text) {
+      console.log('⚠️ No pude extraer texto. Raw message:\n', JSON.stringify(msg, null, 2));
+    }
+
+    return { type: 'message', fromWa, name, text, raw: msg, meta };
+  } catch (e) {
+    console.log('❌ extractIncoming error:', e.message);
     return { type: 'unknown' };
   }
 }
 
 // ------ Ruteo de respuestas ------
-async function handleAutoReply({ fromWa, name, text }) {
+function normalizeText(s = '') {
+  return String(s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim();
+}
+
+function matchesAny(text, patterns = []) {
+  const t = normalizeText(text);
+  return patterns.some(p => {
+    const n = normalizeText(p);
+    return t === n || t.includes(n);
+  });
+}
+
+async function handleAutoReply({ fromWa, name, text, meta }) {
   const ntext = normalizeText(text);
 
-  // 1) No interesado (incluye botones y variantes)
+  // Palabras/variantes
   const noInteres = [
-    'no estoy interesado', 'no gracias', 'no', 'no me interesa',
-    'no quiero', 'no estoy interesada', 'no estoy interesadx'
+    'Ya pague','Ya termine mis estudios','No estoy interesado', 'No estoy interesada',
+    'No me interesa', 'No gracias', 'No', 'No quiero'
   ];
-  const esNoInteres = matchesAny(ntext, [
-    ...noInteres, 'boton no estoy interesado', 'boton no gracias', 'boton no'
-  ]);
+
+  // También detecta por botón aunque el texto venga vacío,
+  // usando meta.kind o payload/id del botón
+  const payloadStr = [
+    meta?.payload, meta?.id, meta?.title, meta?.text
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  const esNoInteres =
+    matchesAny(ntext, noInteres) ||
+    (meta?.kind && /button|interactive/.test(meta.kind) &&
+      (matchesAny(payloadStr, noInteres)));
 
   if (esNoInteres) {
-    log('↪︎ Acción: respuesta "no interesado"');
+    console.log('↪︎ Acción: respuesta "no interesado"');
     await sendWhatsAppText(fromWa, 'Perfecto, borramos su registro. Gracias');
-    await sendEmailNoInteresado({ fromWa, name, text });
+    await sendEmailNoInteresado({ fromWa, name, text: text || payloadStr || '(botón)' });
     return;
   }
 
-  // 2) Gracias / Sí  => sin respuesta
-  const noResponder = ['gracias', 'si', 'sí', 'ok', 'va', 'vale', 'entendido'];
+  // “gracias” → no responder
+  const noResponder = ['Gracias','gracias', 'Ok', 'Va', 'Vale', 'Entendido'];
   if (matchesAny(ntext, noResponder)) {
-    log('↪︎ Acción: no responder (agradecimiento/confirmación)');
+    console.log('↪︎ Acción: no responder (agradecimiento/confirmación)');
     return;
   }
 
-  // 3) Interesado / informes => mandar enlace
+  // Interesado → link
   const interesados = [
-    'estoy interesado', 'estoy interesada', 'quiero informes', 'informes',
-    'me interesa', 'mas info', 'más info', 'quiero informacion', 'quiero información'
+    'Estoy interesado','Estoy interesada','Quiero informes','Informes',
+    'Me interesa','Mas info','Más info','Si','Sí','Chi','Shi','Quiero informacion','Quiero información'
   ];
   if (matchesAny(ntext, interesados)) {
     const msg = `¡Excelente! Aquí tienes más información: ${INTEREST_LINK}`;
-    log('↪︎ Acción: interesado → enviar enlace');
+    console.log('↪︎ Acción: interesado → enviar enlace');
     await sendWhatsAppText(fromWa, msg);
     return;
   }
 
-  // 4) Por defecto => mensaje de espera
-  log('↪︎ Acción: respuesta por defecto');
-  await sendWhatsAppText(
-    fromWa,
-    'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias'
-  );
+  // Por defecto
+  console.log('↪︎ Acción: respuesta por defecto');
+  await sendWhatsAppText(fromWa, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
 }
 
 // ------ Webhook GET (verificación) ------
@@ -263,16 +301,16 @@ app.post(
       return res.sendStatus(200);
     }
 
-    if (incoming.type === 'message') {
-      const { fromWa, name, text } = incoming;
-      log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
-      try {
-        await handleAutoReply({ fromWa, name, text });
-      } catch (e) {
-        log('❌ Error en auto-reply:', e.message);
-      }
-      return res.sendStatus(200);
-    }
+if (incoming.type === 'message') {
+  const { fromWa, name, text, meta } = incoming;
+  console.log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
+  try {
+    await handleAutoReply({ fromWa, name, text, meta });
+  } catch (e) {
+    console.log('❌ Error en auto-reply:', e.message);
+  }
+  return res.sendStatus(200);
+}
 
     // desconocido
     log('ℹ️ Evento no reconocido');
