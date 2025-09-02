@@ -10,7 +10,7 @@ const app = express();
 // ------ Config ------
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN || 'mi_verify_token_super_seguro';
 const WABA_TOKEN      = process.env.WABA_TOKEN || 'naAJ0gxqI0Gd9ZCKGZA1OkWZAA9OzcTW443QCxZCf0Lb5ZBm1Bxktd1twFi0eZBcs7cUHe80f7MSfXURfLka5rCi5P4RXPgvojZBZASLSMPxIcZAKvdMnuV3ZAOImKDWfKUGzdFheW8Drl8Xv0KjGcY9XZAu9V1ZAxmNoZAsEbgxGVPRBskPlgP6NxupeEYWvUZD';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '1072114858234388';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '759100873953981';
 const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // opcional para validar firma
 
 // Email (Gmail con contraseña de aplicación)
