@@ -1,0 +1,524 @@
+[
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T1",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 2777.8
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T2",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 2975.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T3",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3219.8
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T1",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 2614.4
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T2",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 2800.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T3",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3030.4
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T1",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 2451.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T2",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 2625.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 11,
+    "tier": "T3",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 2841.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T1",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 2805.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T2",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3489.25
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T3",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3684.75
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T1",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 2640.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T2",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3284.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T3",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3468.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T1",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 2475.0
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T2",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3078.75
+  },
+  {
+    "nivel": "salud",
+    "modalidad": "presencial",
+    "plan": 12,
+    "tier": "T3",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3251.25
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T1",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3472.25
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T2",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3718.75
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T3",
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 4024.75
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T1",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3268.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T2",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3500.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T3",
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3788.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T1",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3063.75
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T2",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3281.25
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "presencial",
+    "plan": 9,
+    "tier": "T3",
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3551.25
+  },
+  {
+    "nivel": "maestria",
+    "modalidad": "online",
+    "plan": 4,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 3633.75
+  },
+  {
+    "nivel": "maestria",
+    "modalidad": "online",
+    "plan": 4,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 3420.0
+  },
+  {
+    "nivel": "maestria",
+    "modalidad": "online",
+    "plan": 4,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 3206.25
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 11,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 45,
+    "monto": 1845.8
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 11,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 50,
+    "monto": 1678.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 11,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 55,
+    "monto": 1510.2
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "online",
+    "plan": 6,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 1568.25
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "online",
+    "plan": 6,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 1476.0
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "online",
+    "plan": 6,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 1383.75
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 9,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 1652.4
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 9,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 1555.2
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 9,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 1458.0
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 9,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 45,
+    "monto": 2307.25
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 9,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 50,
+    "monto": 2097.5
+  },
+  {
+    "nivel": "licenciatura",
+    "modalidad": "online",
+    "plan": 9,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 55,
+    "monto": 1887.75
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 6,
+    "rango": {
+      "min": 7.0,
+      "max": 7.9
+    },
+    "porcentaje": 15,
+    "monto": 2478.6
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 6,
+    "rango": {
+      "min": 8.0,
+      "max": 8.9
+    },
+    "porcentaje": 20,
+    "monto": 2332.8
+  },
+  {
+    "nivel": "preparatoria",
+    "modalidad": "presencial",
+    "plan": 6,
+    "rango": {
+      "min": 9.0,
+      "max": 10.0
+    },
+    "porcentaje": 25,
+    "monto": 2187.0
+  }
+]

@@ -1,0 +1,46 @@
+{
+  "T1": [
+    "Agua Prieta",
+    "Aguascalientes",
+    "Altamira",
+    "Cananea",
+    "Cd. del Carmen",
+    "Ca. Mante",
+    "Cd. Obregón",
+    "Teocaltiche",
+    "Veracruz"
+  ],
+  "T2": [
+    "Chihuahua",
+    "Culiacán",
+    "Ensenada",
+    "Los Cabos",
+    "Mexicali",
+    "Nogales",
+    "Puerto Peñasco",
+    "Querétaro",
+    "Saltillo",
+    "Torreón",
+    "Zacatecas"
+  ],
+  "T3": [
+    "Hermosillo",
+    "La Paz",
+    "Tijuana"
+  ],
+  "SaludT1": [
+    "Aguascalientes",
+    "Veracruz"
+  ],
+  "SaludT2": [
+    "Chihuahua",
+    "Culiacán",
+    "Querétaro",
+    "Mexicali",
+    "Saltillo"
+  ],
+  "SaludT3": [
+    "Hermosillo",
+    "Tijuana"
+  ]
+}
