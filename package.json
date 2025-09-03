@@ -1,11 +1,13 @@
 {
   "name": "unidep-whatsapp-webhook",
   "version": "1.0.0",
-  "description": "Webhook WhatsApp UNIDEP: icebreakers + costos/becas + pagos + correo",
   "main": "index.js",
-  "type": "module",
+  "type": "commonjs",
+  "engines": {
+    "node": "18.x"
+  },
   "scripts": {
-    "start": "node index.js"
+    "start": "node --trace-uncaught index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
