@@ -13,320 +13,224 @@ const WABA_TOKEN      = process.env.WABA_TOKEN || 'naAJ0gxqI0Gd9ZCKGZA1OkWZAA9Oz
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '759100873953981';
 const APP_SECRET      = process.env.APP_SECRET || '89bb6d2367a4ab0ad3e94021e7cb2046'; // opcional para validar firma
 
-// Email (Gmail con contraseña de aplicación)
-const SMTP_USER   = process.env.SMTP_USER   || 'ricardomartinez19b@gmail.com';
-const SMTP_PASS   = process.env.SMTP_PASS   || 'uwdlbouzhvkdshpt'; // SIN espacios
-const SMTP_TO     = process.env.SMTP_TO     || 'ricardo.martinezh@unidep.edu.mx';
-const SMTP_FROM   = process.env.SMTP_FROM   || 'UNIDEP Bot <ricardomartinez19b@gmail.com>';
-const SMTP_HOST   = process.env.SMTP_HOST   || 'smtp.gmail.com';
-const SMTP_PORT   = Number(process.env.SMTP_PORT || 465);
-const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true') === 'true'; // true para 465
+// Horario comercial (local: América/México_City aprox). Ajusta a tu gusto:
+const BUSINESS_START_HOUR = 15;   // 09:00
+const BUSINESS_END_HOUR   = 21;  // 20:00
 
-// Enlace para interesados
-const INTEREST_LINK = process.env.INTEREST_LINK
-  || 'https://wa.me/523349834926?text=Hola%20me%20interesa%20saber%20m%C3%A1s';
+// Fallback control
+const FALLBACK_COOLDOWN_MIN = 240;  // Evita repetir fallback por usuario durante 4 horas
+const UNKNOWN_BEFORE_FALLBACK = 1;  // Cuántos mensajes “no entendidos” tolerar antes de mostrar el fallback
+const CONTEXT_TTL_MIN = 1440;       // Considera “conversación activa” por 24h desde la última intención reconocida
 
-// Puerto
-const PORT = process.env.PORT || 3000;
+// ====== APP ======
+const app = express();
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
 
-// ------ Utils ------
-const log = (...args) => console.log(...args);
+// ====== ESTADO EN MEMORIA (puedes migrar a Redis/DB) ======
+const SESSION = new Map();
+/*
+  SESSION.set(from, {
+    lastIntentAt: Date,      // última vez que detectamos intención válida
+    lastFallbackAt: Date,    // última vez que mandamos el fallback
+    unknownCount: number,    // consecutivos “no entendidos”
+  })
+*/
 
-function normalizeText(s = '') {
-  return String(s)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quita acentos
-    .toLowerCase().trim();
+// ====== UTILS ======
+function nowMx() {
+  // Servidor puede estar en UTC; ajusta si lo necesitas. Aquí usamos hora del sistema:
+  return new Date();
 }
-
-function matchesAny(text, patterns = []) {
-  const t = normalizeText(text);
-  return patterns.some(p => {
-    const n = normalizeText(p);
-    return t === n || t.includes(n);
-  });
+function isBusinessHours(d = nowMx()) {
+  const h = d.getHours();
+  return h >= BUSINESS_START_HOUR && h < BUSINESS_END_HOUR;
 }
-
-function getHeaderSignature(req) {
-  return req.get('x-hub-signature-256') || '';
+function normalizeText(s = "") {
+  return s
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[\u2000-\u206F\u2E00-\u2E7F\\.,/#!$%^&*;:{}=\-_`~()”“"’']/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
+function minutesDiff(a, b) {
+  return Math.abs((a.getTime() - b.getTime()) / 60000);
+}
+function getSession(from) {
+  if (!SESSION.has(from)) {
+    SESSION.set(from, { lastIntentAt: null, lastFallbackAt: null, unknownCount: 0 });
+  }
+  return SESSION.get(from);
+}
+function touchIntent(from) {
+  const s = getSession(from);
+  s.lastIntentAt = nowMx();
+  s.unknownCount = 0;
+}
+function markUnknown(from) {
+  const s = getSession(from);
+  s.unknownCount += 1;
+}
+function canSendFallback(from) {
+  const s = getSession(from);
+  const now = nowMx();
 
-function validateSignature(rawBody, signature) {
-  if (!APP_SECRET) return true; // si no hay secreto, no validamos firma
-  try {
-    const hmac = crypto.createHmac('sha256', APP_SECRET);
-    hmac.update(rawBody);
-    const expected = 'sha256=' + hmac.digest('hex');
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
-  } catch {
+  // Si hubo intención válida en la ventana de contexto, no spamear fallback
+  if (s.lastIntentAt && minutesDiff(now, s.lastIntentAt) <= CONTEXT_TTL_MIN) {
     return false;
   }
+
+  // Cooldown para no repetir el fallback
+  if (s.lastFallbackAt && minutesDiff(now, s.lastFallbackAt) < FALLBACK_COOLDOWN_MIN) {
+    return false;
+  }
+
+  // Solo mostrar fallback después de N desconocidos consecutivos
+  if (s.unknownCount < UNKNOWN_BEFORE_FALLBACK) {
+    return false;
+  }
+
+  s.lastFallbackAt = now;
+  s.unknownCount = 0; // lo reiniciamos tras mostrarlo
+  return true;
 }
 
-// ------ Envío de WhatsApp ------
-async function sendWhatsAppText(to, body) {
-  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body }
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WABA_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
+async function sendText(to, body) {
+  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+  const payload = { messaging_product: "whatsapp", to, type: "text", text: { body } };
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    log('❌ Error enviando WA:', res.status, JSON.stringify(data));
-  } else {
-    log('📤 Enviado a', to, '| msgId=', data.messages?.[0]?.id || 'n/a');
-  }
-  return { ok: res.ok, data };
-}
-
-// ------ Email ------
-const emailEnabled = SMTP_USER && SMTP_PASS && SMTP_TO && SMTP_FROM;
-let transporter = null;
-
-if (emailEnabled) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    auth: { user: SMTP_USER, pass: SMTP_PASS }
-  });
-  log('📧 Email notifications: ENABLED');
-} else {
-  log('📪 Email notifications: DISABLED (faltan variables SMTP*)');
-}
-
-async function sendEmailNoInteresado({ fromWa, name, text }) {
-  if (!emailEnabled) return;
-
-  const subject = `Baja / No interesado - ${fromWa}${name ? ` (${name})` : ''}`;
-  const html = `
-    <h2>Solicitud de BAJA / NO INTERESADO</h2>
-    <p><b>Número:</b> ${fromWa}</p>
-    ${name ? `<p><b>Nombre:</b> ${name}</p>` : ''}
-    <p><b>Mensaje:</b> ${text || '(omito texto)'}</p>
-    <p>Fecha: ${new Date().toLocaleString('es-MX', { timeZone: 'America/Mexico_City' })}</p>
-  `;
-
-  try {
-    await transporter.sendMail({
-      from: SMTP_FROM,
-      to: SMTP_TO,
-      subject,
-      html
-    });
-    log('📨 Email enviado a', SMTP_TO);
-  } catch (e) {
-    log('❌ Error enviando email:', e.message);
+  if (!resp.ok) {
+    const t = await resp.text().catch(() => "");
+    console.error("❌ Error enviando WA:", resp.status, t);
   }
 }
 
-// ------ Extraer texto y remitente del webhook ------
-function extractIncoming(body) {
-  try {
-    const entry  = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value  = change?.value;
-
-    // Notificaciones de estado (delivered, read, etc.)
-    const status = value?.statuses?.[0];
-    if (status) return { type: 'status', status };
-
-    // Mensaje entrante
-    const msg    = value?.messages?.[0];
-    if (!msg) return { type: 'unknown' };
-
-    const fromWa = msg.from;
-    const name   = value?.contacts?.[0]?.profile?.name || '';
-
-    let text = '';
-    let meta = {};
-
-    // 1) Texto normal
-    if (msg.type === 'text') {
-      text = msg.text?.body || '';
-    }
-
-    // 2) Respuesta de botón de template (type: "button")
-    if (msg.type === 'button') {
-      const b = msg.button || {};
-      text = b.text || b.payload || '';
-      meta = { kind: 'button', payload: b.payload || null, text: b.text || null };
-    }
-
-    // 3) Interactivos (quick reply o listas)
-    if (msg.type === 'interactive') {
-      const br = msg.interactive?.button_reply;
-      const lr = msg.interactive?.list_reply;
-      if (br) {
-        text = br.title || br.id || '';
-        meta = { kind: 'interactive_button', id: br.id || null, title: br.title || null };
-      }
-      if (lr) {
-        text = lr.title || lr.id || '';
-        meta = { kind: 'interactive_list', id: lr.id || null, title: lr.title || null };
-      }
-    }
-
-    // 4) Último recurso: si sigue vacío, loguea RAW para depurar
-    if (!text) {
-      console.log('⚠️ No pude extraer texto. Raw message:\n', JSON.stringify(msg, null, 2));
-    }
-
-    return { type: 'message', fromWa, name, text, raw: msg, meta };
-  } catch (e) {
-    console.log('❌ extractIncoming error:', e.message);
-    return { type: 'unknown' };
+// extrae texto de text o interactive
+function extractIncomingText(message) {
+  if (!message) return "";
+  if (message.type === "text") return message.text?.body || "";
+  if (message.type === "interactive") {
+    const it = message.interactive;
+    if (it?.type === "button_reply") return it.button_reply?.title || it.button_reply?.id || "";
+    if (it?.type === "list_reply")   return it.list_reply?.title   || it.list_reply?.id   || "";
   }
+  return "";
 }
 
-// ------ Ruteo de respuestas ------
-function normalizeText(s = '') {
-  return String(s)
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().trim();
-}
+// ====== PATRONES GENERALIZADOS ======
+// Negativos (más amplio y robusto)
+const RX_NEG = [
+  /\bno\s+estoy\s+interesad[oa]s?\b/,
+  /\bno\s+me\s+interesa(n)?\b/,
+  /\bno\b.*\binteresad[oa]s?\b/,
+  /\bgracias\b.*\b(no|ya no)\b/,
+  /\b(ba(ja)?|alto|stop|cancelar|borrar|quitar|eliminar|desuscribir|unsubscribe|unsuscribe|no gracias)\b/,
+  /\bno quiero\b|\bno por ahora\b|\botro dia\b|\bmas adelante\b/
+];
 
-function matchesAny(text, patterns = []) {
-  const t = normalizeText(text);
-  return patterns.some(p => {
-    const n = normalizeText(p);
-    return t === n || t.includes(n);
-  });
-}
+// Positivos (afirmaciones y sinónimos comunes)
+const RX_POS = [
+  /\bsi\b|\bsí\b|\bclaro\b|\bok\b|\bokey\b|\bvale\b|\bde acuerdo\b|\bperfecto\b|\bme parece\b/,
+  /\bestoy\s+interesad[oa]s?\b/,
+  /\bme\s+interesa(n)?\b/,
+  /\bquiero\b|\bdeseo\b|\badelante\b|\bva\b/
+];
 
-async function handleAutoReply({ fromWa, name, text, meta }) {
-  const ntext = normalizeText(text);
+// Intenciones exactas pedidas
+function isExact(a, b) { return normalizeText(a) === normalizeText(b); }
 
-  // Palabras/variantes
-  const noInteres = [
-    'Ya pague','Ya termine mis estudios','No estoy interesado', 'No estoy interesada',
-    'No me interesa', 'No gracias', 'No', 'No quiero'
-  ];
+const RX_PRESENCIAL = [/^1$/, /informes?\s+oferta\s+presencial/];
+const RX_REGRESAR   = [/^2$/, /quiero\s+regresar\s+a?\s*unidep/];
+const RX_ONLINE     = [/^3$/, /informes?\s+oferta\s+online/];
 
-  // También detecta por botón aunque el texto venga vacío,
-  // usando meta.kind o payload/id del botón
-  const payloadStr = [
-    meta?.payload, meta?.id, meta?.title, meta?.text
-  ].filter(Boolean).join(' ').toLowerCase();
+function any(list, text) { return list.some(rx => rx.test(text)); }
 
-  const esNoInteres =
-    matchesAny(ntext, noInteres) ||
-    (meta?.kind && /button|interactive/.test(meta.kind) &&
-      (matchesAny(payloadStr, noInteres)));
-
-  if (esNoInteres) {
-    console.log('↪︎ Acción: respuesta "no interesado"');
-    await sendWhatsAppText(fromWa, 'Perfecto, borramos su registro. Gracias');
-    await sendEmailNoInteresado({ fromWa, name, text: text || payloadStr || '(botón)' });
-    return;
-  }
-
-  // “gracias” → no responder
-  const noResponder = ['Gracias','gracias', 'Ok', 'Va', 'Vale', 'Entendido'];
-  if (matchesAny(ntext, noResponder)) {
-    console.log('↪︎ Acción: no responder (agradecimiento/confirmación)');
-    return;
-  }
-
-  // Interesado → link
-  const interesados = [
-    'Estoy interesado','Estoy interesada','Quiero informes','Informes',
-    'Me interesa','Mas info','Más info','Si','Sí','Chi','Shi','Quiero informacion','Quiero información'
-  ];
-  if (matchesAny(ntext, interesados)) {
-    const msg = `¡Excelente! Aquí tienes más información: ${INTEREST_LINK}`;
-    console.log('↪︎ Acción: interesado → enviar enlace');
-    await sendWhatsAppText(fromWa, msg);
-    return;
-  }
-
-  // Por defecto
-  console.log('↪︎ Acción: respuesta por defecto');
-  await sendWhatsAppText(fromWa, 'Hola, nos pondremos en contacto contigo tan pronto nos sea posible. Gracias');
-}
-
-// ------ Webhook GET (verificación) ------
-app.get('/webhook', (req, res) => {
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    log('✅ Webhook verificado (GET).');
-    return res.status(200).send(challenge);
-  }
-  log('⛔ Webhook NO verificado (GET).');
+// ====== WEBHOOK VERIFY (GET) ======
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-// ------ Webhook POST (eventos) ------
-app.post(
-  '/webhook',
-  express.raw({ type: 'application/json' }), // importante para firma
-  async (req, res) => {
-    // Validación de firma (opcional)
-    const sig = getHeaderSignature(req);
-    if (!validateSignature(req.body, sig)) {
-      log('❌ Firma X-Hub-Signature inválida.');
-      return res.sendStatus(401);
-    }
+// ====== RECEPCIÓN (POST) ======
+app.post("/webhook", async (req, res) => {
+  try {
+    // Firma
+    const signature = req.get("x-hub-signature-256") || "";
+    const expected  = "sha256=" + crypto.createHmac("sha256", APP_SECRET).update(req.rawBody).digest("hex");
+    if (signature !== expected) return res.sendStatus(403);
 
-    // req.body es Buffer; parseamos a JSON
-    let json;
-    try {
-      json = JSON.parse(req.body.toString('utf8'));
-    } catch {
-      log('❌ Body inválido');
-      return res.sendStatus(400);
-    }
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
+    if (!messages || !messages.length) return res.sendStatus(200);
 
-    const incoming = extractIncoming(json);
+    const m = messages[0];
+    const from = m.from;
+    const raw = extractIncomingText(m);
+    const text = normalizeText(raw);
 
-    if (incoming.type === 'status') {
-      const st = incoming.status;
-      log(
-        `🔔 Status: to=${st.recipient_id} status=${st.status} msgId=${st.id || st.message_id || 'n/a'} conv=${st.conversation?.id || 'n/a'}`
-      );
+    // Solo intervenimos con esta lógica DENTRO de horario comercial
+    if (!isBusinessHours()) {
       return res.sendStatus(200);
     }
 
-if (incoming.type === 'message') {
-  const { fromWa, name, text, meta } = incoming;
-  console.log(`💬 Mensaje de ${fromWa}${name ? ` (${name})` : ''} | texto="${text}"`);
-  try {
-    await handleAutoReply({ fromWa, name, text, meta });
-  } catch (e) {
-    console.log('❌ Error en auto-reply:', e.message);
-  }
-  return res.sendStatus(200);
-}
+    // 1) Atajos numéricos / intenciones exactas
+    if (any(RX_PRESENCIAL, text) || isExact(text, "informes oferta presencial")) {
+      await sendText(from, "Excelente, ¿en que plantel y que programa estas interesado?");
+      touchIntent(from);
+      return res.sendStatus(200);
+    }
 
-    // desconocido
-    log('ℹ️ Evento no reconocido');
+    if (any(RX_REGRESAR, text) || isExact(text, "quiero regresar a unidep")) {
+      await sendText(from, "Perfecto, me podrías apoyar con tu nombre completo o matricula, por favor 🙏");
+      touchIntent(from);
+      return res.sendStatus(200);
+    }
+
+    if (any(RX_ONLINE, text) || isExact(text, "informes oferta online")) {
+      await sendText(from, "Excelente, ¿en que carrera estas interesado, o gustas que te comparta nuestra oferta Online?");
+      touchIntent(from);
+      return res.sendStatus(200);
+    }
+
+    // 2) Negativo (prioridad)
+    if (any(RX_NEG, text) || isExact(text, "no estoy interesado")) {
+      await sendText(from, "Perfecto, borramos tu registro. Gracias por tu tiempo");
+      touchIntent(from); // lo marcamos para no volver a insistir
+      return res.sendStatus(200);
+    }
+
+    // 3) Positivo (cuando no hubo negativo)
+    if (any(RX_POS, text)) {
+      await sendText(from, "Buen día. Perfecto, dame unos momentos más para apoyarte.");
+      touchIntent(from);
+      return res.sendStatus(200);
+    }
+
+    // 4) Desconocido → controlar fallback (sin spamear)
+    markUnknown(from);
+    if (canSendFallback(from)) {
+      await sendText(
+        from,
+        "Para avanzar rápido, responde 1, 2 o 3:\n1) Informes Presencial\n2) Quiero regresar a UNIDEP\n3) Informes Online\n(Escribe NO para dejar de recibir info)"
+      );
+    }
     return res.sendStatus(200);
+
+  } catch (e) {
+    console.error("❌ Webhook error:", e);
+    return res.sendStatus(500);
   }
-);
-
-// ------ Health & root ------
-app.get('/healthz', (req, res) =>
-  res.status(200).json({ ok: true, uptime: process.uptime() })
-);
-app.get('/', (req, res) => res.send('Webhook UNIDEP listo ✅'));
-
-app.listen(PORT, () => {
-  log('//////////////////////////////////////////////////////////');
-  if (!emailEnabled) log('📪 Email notifications: DISABLED (faltan variables SMTP*)');
-  log(`🚀 Servidor escuchando en puerto ${PORT}`);
-  log('//////////////////////////////////////////////////////////');
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Webhook listo en :${PORT}`));
