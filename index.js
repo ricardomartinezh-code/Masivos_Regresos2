@@ -34,7 +34,7 @@ const TIMEZONE       = 'America/Mexico_City';
 // Pausa de emergencia global
 let EMERGENCY_PAUSE_RUNTIME = String(process.env.EMERGENCY_PAUSE || 'false') === 'true';
 // Admins (números internacionales, ej: "5213312345678,5215511122233")
-const ADMIN_WA_IDS = (process.env.ADMIN_WA_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ADMIN_WA_IDS = (process.env.ADMIN_WA_IDS || '5215580363386').split(',').map(s => s.trim()).filter(Boolean);
 
 // Imagen SPEI (Drive público → link directo)
 const SPEI_IMAGE_URL = process.env.SPEI_IMAGE_URL
