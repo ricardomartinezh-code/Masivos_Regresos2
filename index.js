@@ -14,15 +14,15 @@ const app = express();
 
 // ------ CONFIG ------
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN    || 'mi_verify_token_super_seguro';
-const WABA_TOKEN      = process.env.WABA_TOKEN      || 'TU_WABA_TOKEN_AQUI';
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || 'TU_PHONE_NUMBER_ID_AQUI';
-const APP_SECRET      = process.env.APP_SECRET      || ''; // opcional: '' para omitir firma
+const WABA_TOKEN      = process.env.WABA_TOKEN      || 'EAALJbUFKlZCIBPeSAqtTxH4Cqg4gq48iKvMOZBxTNsj4sJpabWDLGSYlhODZBk5p9p71W80VRoZBWKkjHVF5seEFQcbjq5kxdhDBv2ZC4eCYMEZBYtvgLZCtRPTFfUYp5HT6TTZBWLAYsJjoIickcBCaiClQpxdzSDtnuARHftuD7VKXwpwL6gmTnGVfEihv0ZA4B2BR0jgfq2scZD';
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '759100873953981';
+const APP_SECRET      = process.env.APP_SECRET      || '89bb6d2367a4ab0ad3e94021e7cb2046'; // opcional: '' para omitir firma
 
 // Email (Gmail App Password)
-const SMTP_USER   = process.env.SMTP_USER   || 'tu.gmail@ejemplo.com';
-const SMTP_PASS   = process.env.SMTP_PASS   || 'CONTRASENA_DE_APP';
-const SMTP_TO     = process.env.SMTP_TO     || 'destino@unidep.edu.mx';
-const SMTP_FROM   = process.env.SMTP_FROM   || 'UNIDEP Bot <tu.gmail@ejemplo.com>';
+const SMTP_USER   = process.env.SMTP_USER   || 'ricardomartinez19b@gmail.com';
+const SMTP_PASS   = process.env.SMTP_PASS   || 'uwdlbouzhvkdshpt';
+const SMTP_TO     = process.env.SMTP_TO     || 'ricardo.martinezh@unidep.edu.mx';
+const SMTP_FROM   = process.env.SMTP_FROM   || 'UNIDEP Bot <ricardomartinez19b@gmail.com>';
 const SMTP_HOST   = process.env.SMTP_HOST   || 'smtp.gmail.com';
 const SMTP_PORT   = Number(process.env.SMTP_PORT || 465);
 const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true') === 'true';
