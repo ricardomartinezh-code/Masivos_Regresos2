@@ -1,17 +1,22 @@
 // ====== Webhook WhatsApp UNIDEP (Icebreakers + Costos/Becas + Pagos + Emails) ======
-const express = require('express');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
-const fs = require('fs');
-const path = require('path');
+import express from 'express';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const app = express(); // no declarar otro app
+// __dirname en ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
 
 // ------ CONFIG ------
 const VERIFY_TOKEN    = process.env.VERIFY_TOKEN    || 'mi_verify_token_super_seguro';
 const WABA_TOKEN      = process.env.WABA_TOKEN      || 'TU_WABA_TOKEN_AQUI';
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || 'TU_PHONE_NUMBER_ID_AQUI';
-const APP_SECRET      = process.env.APP_SECRET      || ''; // opcional: deja '' para omitir firma
+const APP_SECRET      = process.env.APP_SECRET      || ''; // opcional: '' para omitir firma
 
 // Email (Gmail App Password)
 const SMTP_USER   = process.env.SMTP_USER   || 'tu.gmail@ejemplo.com';
@@ -24,6 +29,7 @@ const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true') === 'true';
 
 // Costos/Becas (JSON exportado del Excel)
 const COSTOS_JSON_PATH = process.env.COSTOS_JSON_PATH || path.join(__dirname, 'data', 'costos.json');
+const PLANTEL_TIER_PATH = path.join(__dirname, 'data', 'plantel_tier.json');
 
 // Imagen SPEI (link público de Drive → link directo)
 const SPEI_IMAGE_URL = process.env.SPEI_IMAGE_URL
@@ -56,6 +62,7 @@ const UNKNOWN_BEFORE_FALLBACK = 2;    // 2 intentos fallidos seguidos
 const CONTEXT_TTL_MIN         = 1440; // 24h
 
 // ====== Estado en memoria ======
+const SESSION = new Map();
 /*
 SESSION.set(from, {
   lastIntentAt, lastFallbackAt, unknownCount,
@@ -67,7 +74,6 @@ SESSION.set(from, {
   }
 })
 */
-const SESSION = new Map();
 
 // ====== Prepa presencial: duración por plantel (2, 3 o '2|3') ======
 const PREPA_PRESENCIAL_DURACION = {
@@ -82,56 +88,8 @@ const PREPA_PRESENCIAL_DURACION = {
   "Zacatecas": "2"
 };
 
-// ====== TIER por Plantel (Licenciaturas Presenciales) ======
-function normalizeKey(s=''){
-  return s
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g,'');
-}
-
-// Cargar de data/plantel_tier.json si existe; si no, usar inline (edítalo abajo)
-let PLANTEL_TIER = null;
-try{
-  const p = path.join(__dirname, 'data', 'plantel_tier.json');
-  if (fs.existsSync(p)) {
-    const raw = JSON.parse(fs.readFileSync(p,'utf8'));
-    PLANTEL_TIER = {
-      T1: new Set((raw.T1||[]).map(normalizeKey)),
-      T2: new Set((raw.T2||[]).map(normalizeKey)),
-      T3: new Set((raw.T3||[]).map(normalizeKey))
-    };
-  }
-}catch(e){ /* ignora */ }
-
-const INLINE_TIER = {
-  T1: [ /* "Agua Prieta","Aguascalientes", ... */ ],
-  T2: [ /* "Chihuahua","Querétaro","Torreón", ... */ ],
-  T3: [ /* "Hermosillo","Tijuana","La Paz", ... */ ]
-};
-const INLINE_TIER_SETS = {
-  T1: new Set(INLINE_TIER.T1.map(normalizeKey)),
-  T2: new Set(INLINE_TIER.T2.map(normalizeKey)),
-  T3: new Set(INLINE_TIER.T3.map(normalizeKey))
-};
-function tierFromPlantel(plantel /* , nivel */){
-  if(!plantel) return null;
-  const k = normalizeKey(plantel);
-  if (PLANTEL_TIER) {
-    if (PLANTEL_TIER.T1.has(k)) return 'T1';
-    if (PLANTEL_TIER.T2.has(k)) return 'T2';
-    if (PLANTEL_TIER.T3.has(k)) return 'T3';
-    return null;
-  }
-  if (INLINE_TIER_SETS.T1.has(k)) return 'T1';
-  if (INLINE_TIER_SETS.T2.has(k)) return 'T2';
-  if (INLINE_TIER_SETS.T3.has(k)) return 'T3';
-  return null;
-}
-
-// ====== Utils ======
+// ====== Utilidades ======
 const log = (...a) => console.log(...a);
-
 function hourInTimeZone(tz = BUSINESS_TZ) {
   return Number(new Intl.DateTimeFormat('es-MX', { hour: 'numeric', hour12: false, timeZone: tz }).format(new Date()));
 }
@@ -180,6 +138,48 @@ function optionsListText(){
     '• ¿Cómo pagar?',
     '• Ya estoy inscrito'
   ].join('\n');
+}
+
+// ====== Carga plantel → Tier (Lic y Salud) ======
+function normalizeKey(s=''){
+  return s
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g,'');
+}
+
+let PLANTEL_TIER = null;
+try{
+  if (fs.existsSync(PLANTEL_TIER_PATH)) {
+    const raw = JSON.parse(fs.readFileSync(PLANTEL_TIER_PATH,'utf8'));
+    // Guardar como listas para luego convertir a Set normalizado
+    PLANTEL_TIER = raw;
+    log('📚 plantel_tier.json cargado');
+  } else {
+    log('⚠️ plantel_tier.json no encontrado en /data (usará null)');
+  }
+}catch(e){ log('⚠️ Error leyendo plantel_tier.json:', e.message); }
+
+function tierFromPlantel(plantel){
+  if(!plantel) return { licTier: null, saludTier: null };
+  const k = normalizeKey(plantel);
+
+  // construir sets normalizados cada llamada (barato y simple)
+  const toSet = (arr)=> new Set((arr||[]).map(normalizeKey));
+
+  let licTier = null, saludTier = null;
+  if (PLANTEL_TIER) {
+    const t1 = toSet(PLANTEL_TIER.T1), t2 = toSet(PLANTEL_TIER.T2), t3 = toSet(PLANTEL_TIER.T3);
+    if (t1.has(k)) licTier = 'T1';
+    else if (t2.has(k)) licTier = 'T2';
+    else if (t3.has(k)) licTier = 'T3';
+
+    const s1 = toSet(PLANTEL_TIER.SaludT1), s2 = toSet(PLANTEL_TIER.SaludT2), s3 = toSet(PLANTEL_TIER.SaludT3);
+    if (s1.has(k)) saludTier = 'SaludT1';
+    else if (s2.has(k)) saludTier = 'SaludT2';
+    else if (s3.has(k)) saludTier = 'SaludT3';
+  }
+  return { licTier, saludTier };
 }
 
 // ====== WhatsApp Senders ======
@@ -339,7 +339,7 @@ function inferSlotsFromText(slots, text){
   if (/psicolog/i.test(t)) {
     slots.nivel = 'salud';
     slots.modalidad = slots.modalidad || 'presencial';
-    if (!slots.plan) slots.plan = 9; // comunicamos 9 cuatris
+    if (!slots.plan) slots.plan = 9; // comunicado
   }
 
   if(/\b11\b.*cuatr/.test(t)) slots.plan=11;
@@ -352,10 +352,9 @@ function inferSlotsFromText(slots, text){
 
   const PLANTELES = new Set([
     ...Object.keys(PREPA_PRESENCIAL_DURACION),
-    // agrega aquí otros planteles si quieres capturarlos por texto
-    "Agua Prieta","Aguascalientes","Cd. Obregón","Cajeme",
-    "Hermosillo","Nogales","Culiacán","Tijuana","Torreón",
-    "Zacatecas","Querétaro","Chihuahua","La Paz","Cd. Mante"
+    "Agua Prieta","Aguascalientes","Altamira","Cananea","Cd. del Carmen","Cd. Mante","Ca. Mante",
+    "Cd. Obregón","Teocaltiche","Veracruz","Chihuahua","Culiacán","Ensenada","Los Cabos","Mexicali",
+    "Nogales","Puerto Peñasco","Querétaro","Saltillo","Torreón","Zacatecas","Hermosillo","La Paz","Tijuana"
   ]);
   for(const p of PLANTELES){ if(t.includes(normalizeText(p))) { slots.plantel=p; break; } }
 
@@ -391,8 +390,6 @@ function missingSlotsForCostFlow(slots){
 }
 
 // ====== Costos/Becas (JSON) ======
-// { "nivel":"licenciatura","modalidad":"presencial","plan":11,"tier":"T1|T2|T3|Salud",
-//   "rango":{"min":7.0,"max":8.4}, "porcentaje":20, "monto": 2450 }
 function loadCostosData(){
   try{
     const raw = fs.readFileSync(COSTOS_JSON_PATH,'utf8');
@@ -417,23 +414,22 @@ async function quoteCosts(slots){
   if(!data){
     return [
       'Puedo cotizarte mensualidad con tu promedio y modalidad.',
-      'Para activarlo, exporta tu Excel “Costos 2025” a ./data/costos.json',
+      'Sube ./data/costos.json (exportado del Excel “Costos 2025”).',
       'Fila tipo: { nivel, modalidad, plan, tier?, rango:{min,max}, porcentaje, monto }',
       `Detecté → Nivel: ${nivel||'¿?'}, Modalidad: ${modalidad||'¿?'}, Plan: ${plan||'¿?'}, ` +
       `${modalidad==='presencial' ? `Plantel: ${plantel||'¿? '}` : ''}Promedio: ${promedio||'¿?'}`
     ].join('\n');
   }
 
-  // Psicología = Salud (cotiza con plan 12) aunque comuniquemos 9
+  // Psicología = Salud: cotiza con plan 12, comunica 9
   const planForPricing = (nivel === 'salud' && Number(plan) === 9) ? 12 : Number(plan);
 
-  const promedioPiso = (typeof promedio==='number' && promedio >= 6 && promedio < 7) ? promedio : promedio;
-
-  // TIER por plantel (Lic. Presencial); Salud usa "Salud"
+  // TIER por plantel
   let tier = null;
   if (modalidad === 'presencial') {
-    if (nivel === 'salud') tier = 'Salud';
-    else tier = tierFromPlantel(plantel, nivel);
+    const { licTier, saludTier } = tierFromPlantel(plantel);
+    if (nivel === 'salud') tier = saludTier || 'Salud';
+    else if (nivel === 'licenciatura') tier = licTier;
   }
 
   const base = data.filter(row =>
@@ -447,17 +443,17 @@ async function quoteCosts(slots){
     if (nivel==='salud' && Number(plan)===9) {
       return `No encontré tabla de Salud (plan 12) para cotizar Psicología. Revisa costos.json (Salud 12).`;
     }
-    return `No encontré tabla para nivel=${nivel}, modalidad=${modalidad}, plan=${plan}${modalidad==='presencial' ? `, plantel=${plantel}`:''}. Revisa costos.json.`;
+    return `No encontré tabla para nivel=${nivel}, modalidad=${modalidad}, plan=${plan}${modalidad==='presencial' ? `, plantel=${plantel}`:''}.`;
   }
 
-  let candidates = base.filter(r => rangoMatch(r.rango, promedioPiso));
+  let candidates = base.filter(r => rangoMatch(r.rango, promedio));
   if(candidates.length===0){
     const sorted = base.slice().sort((a,b)=>(a.rango?.min||0)-(b.rango?.min||0));
     if(sorted.length) candidates = [sorted[0]];
   }
 
-  const chosen = candidates.sort((a,b)=> (Math.abs((a.rango?.min||0)-promedioPiso)) - (Math.abs((b.rango?.min||0)-promedioPiso)) )[0];
-  if(!chosen) return 'No pude determinar la mensualidad con los datos actuales. Revisa costos.json';
+  const chosen = candidates.sort((a,b)=> (Math.abs((a.rango?.min||0)-promedio)) - (Math.abs((b.rango?.min||0)-promedio)) )[0];
+  if(!chosen) return 'No pude determinar la mensualidad. Revisa costos.json';
 
   const beca = typeof chosen.porcentaje==='number' ? chosen.porcentaje : null;
   const monto = typeof chosen.monto==='number' ? chosen.monto : null;
@@ -526,34 +522,34 @@ app.post('/webhook', express.raw({ type:'application/json' }), async (req,res)=>
     const s=getSession(fromWa);
     inferSlotsFromText(s.slots, text);
 
-    // 1) Icebreakers
-    if(ntext===normalizeText(EXACT_PRESENCIAL) || anyRx(RX_PRESENCIAL,ntext)){
+    // 1) Icebreakers exactos o equivalentes
+    if(ntext===normalizeText('Informes oferta Presencial') || /informes?\s+oferta\s+presencial/i.test(ntext)){
       await sendWhatsAppText(fromWa,"Excelente, ¿en qué plantel y qué programa estás interesado?");
       s.intent=null; touchIntent(fromWa); return res.sendStatus(200);
     }
-    if(ntext===normalizeText(EXACT_REGRESAR) || anyRx(RX_REGRESAR,ntext)){
+    if(ntext===normalizeText('Quiero regresar a UNIDEP') || /(quiero\s+)?regresar\s+a?\s*unidep/i.test(ntext)){
       await sendWhatsAppText(fromWa,"Déjame verificar tu estado académico para ver si podemos otorgarte una beca y cómo quedarían los costos. ¿Me compartes tu nombre completo o matrícula?");
       s.intent='regresar'; touchIntent(fromWa); return res.sendStatus(200);
     }
-    if(ntext===normalizeText(EXACT_ONLINE) || anyRx(RX_ONLINE,ntext)){
+    if(ntext===normalizeText('Informes oferta Online') || /(informes?|oferta)\s+online/i.test(ntext)){
       await sendWhatsAppText(fromWa,"Excelente, ¿en qué carrera estás interesado, o gustas que te comparta nuestra oferta Online?");
       s.intent=null; touchIntent(fromWa); return res.sendStatus(200);
     }
 
     // 2) Negativo / Positivo
-    if(anyRx(RX_NEG,ntext)){
+    if(RX_NEG.some(rx=>rx.test(ntext))){
       await sendWhatsAppText(fromWa,"Perfecto, borramos tu registro. Gracias por tu tiempo");
       s.intent=null; touchIntent(fromWa); return res.sendStatus(200);
     }
-    if(anyRx(RX_POS,ntext)){
+    if(RX_POS.some(rx=>rx.test(ntext))){
       await sendWhatsAppText(fromWa,"Buen día. Perfecto, dame unos momentos más para apoyarte.");
       s.intent=null; touchIntent(fromWa); return res.sendStatus(200);
     }
 
     // 3) Pago (incluye en plantel / transferencia / liga)
-    if(anyRx(RX_PAGO_INTENT,ntext) || s.intent==='pago' || s.intent==='pago_plantel'){
-      // En plantel en cualquier punto
-      if(anyRx(RX_PAGO_PLANTEL,ntext)){
+    if(RX_PAGO_INTENT.some(rx=>rx.test(ntext)) || s.intent==='pago' || s.intent==='pago_plantel'){
+      // En plantel
+      if(RX_PAGO_PLANTEL.some(rx=>rx.test(ntext))){
         s.intent='pago_plantel'; touchIntent(fromWa);
         if(!s.slots.plantel){
           await sendWhatsAppText(fromWa,"¿En qué plantel te gustaría realizar el pago?");
@@ -588,8 +584,8 @@ app.post('/webhook', express.raw({ type:'application/json' }), async (req,res)=>
       // Flujo pago general (transferencia vs liga)
       s.intent='pago'; touchIntent(fromWa);
       if(!s.slots.paymentMethod){
-        if(anyRx(RX_PAGO_TRANSFERENCIA,ntext)) s.slots.paymentMethod='transferencia';
-        else if(anyRx(RX_PAGO_LIGA,ntext)) s.slots.paymentMethod='liga';
+        if(RX_PAGO_TRANSFERENCIA.some(rx=>rx.test(ntext))) s.slots.paymentMethod='transferencia';
+        else if(RX_PAGO_LIGA.some(rx=>rx.test(ntext))) s.slots.paymentMethod='liga';
         else {
           await sendWhatsAppText(fromWa,"¿Quieres pagar por transferencia bancaria o por liga de pago?");
           return res.sendStatus(200);
@@ -617,9 +613,9 @@ app.post('/webhook', express.raw({ type:'application/json' }), async (req,res)=>
     }
 
     // 5) Costos/Beca → slot-filling
-    if(anyRx(RX_COSTOS,ntext) || anyRx(RX_BECA,ntext) || s.intent==='costos' || s.intent==='beca'){
+    if(RX_COSTOS.some(rx=>rx.test(ntext)) || RX_BECA.some(rx=>rx.test(ntext)) || s.intent==='costos' || s.intent==='beca'){
       if(s.intent!=='costos' && s.intent!=='beca'){
-        s.intent = anyRx(RX_BECA,ntext) ? 'beca' : 'costos';
+        s.intent = RX_BECA.some(rx=>rx.test(ntext)) ? 'beca' : 'costos';
       }
       touchIntent(fromWa);
 
